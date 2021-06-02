@@ -87,6 +87,7 @@ const sortOrder = (sortBy, direction) => {
     }
 }
 
+//a method to validate and return the given direction option
 const getDirection = (direction) =>
 {
     const validDir = ['asc', 'desc']
@@ -99,6 +100,7 @@ const getDirection = (direction) =>
     else{return 'asc'}
 }
 
+//a method to validate and return the given sortBy option
 const getSortBy = (sortBy) =>
 {
     const validSort = ['id', 'reads', 'likes', 'popularity']
@@ -111,6 +113,7 @@ const getSortBy = (sortBy) =>
     else{return 'id'}
 }
 
+//a method to fetch the posts of a given id
 const getPosts = async (tag) =>
 {
     const response = await fetch('https://api.hatchways.io/assessment/blog/posts?tag=' + tag)
@@ -119,6 +122,7 @@ const getPosts = async (tag) =>
     return data.posts
 }
 
+//a method to filter the list by the ids
 const filterById = (list) =>
 {
     const foundIDs = new Set()
