@@ -11,14 +11,35 @@ export type Item = {
   fixed: boolean;
   /** For flexible items: don't place before this minute (e.g. "this evening"). */
   earliest: number | null;
+  /** For flexible items: must end by this minute (e.g. "before 3pm"). */
+  latest?: number | null;
   done: boolean;
   createdAt: number;
   /** Id of the matching event in the phone calendar, once synced. */
   eventId?: string | null;
+  /** Set on occurrences of a repeating item. */
+  routineId?: string | null;
+};
+
+/** A repeating item ("workout mon tue thu fri 5-6pm every week"). */
+export type Routine = {
+  id: string;
+  title: string;
+  /** Weekdays, 0 = Sunday. */
+  days: number[];
+  start: number | null;
+  duration: number;
+  earliest: number | null;
+  latest: number | null;
+  /** First day it applies. */
+  from: string;
+  /** Occurrences have been created up to and including this day. */
+  until: string;
+  createdAt: number;
 };
 
 export type Settings = {
-  /** Auto-placed items go between dayStart and dayEnd (minutes after midnight). */
+  /** Wake-up time and bedtime (minutes after midnight). Nothing is auto-placed outside them. */
   dayStart: number;
   dayEnd: number;
   defaultDuration: number;
@@ -29,8 +50,8 @@ export type Settings = {
 };
 
 export const DEFAULT_SETTINGS: Settings = {
-  dayStart: 8 * 60,
-  dayEnd: 22 * 60,
+  dayStart: 7 * 60,
+  dayEnd: 23 * 60,
   defaultDuration: 30,
   calendarSync: true,
   calendarId: null,

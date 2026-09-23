@@ -21,20 +21,26 @@ import { parseCommand } from './src/parser';
 import {
   applyCommand,
   bringToToday,
+  changeSettings,
   Ctx,
   datesOfInterest,
   leftovers,
+  materialize,
   moveItem,
   pushLater,
+  reflow,
   removeItem,
   Result,
   setDone,
+  stopRoutine,
 } from './src/scheduler';
-import { loadItems, loadSettings, saveItems, saveSettings } from './src/storage';
+import { loadItems, loadRoutines, loadSettings, saveItems, saveRoutines, saveSettings } from './src/storage';
 import { useTheme } from './src/theme';
-import { BusyEvent, DEFAULT_SETTINGS, Item, Settings } from './src/types';
+import { BusyEvent, DEFAULT_SETTINGS, Item, Routine, Settings } from './src/types';
 
-type Toast = { message: string; tone: Result['tone']; undo: Item[] | null };
+/** Everything Undo needs to put back. */
+type Snapshot = { items: Item[]; routines: Routine[]; settings: Settings };
+type Toast = { message: string; tone: Result['tone']; undo: Snapshot | null };
 type CalStatus = 'unknown' | 'granted' | 'denied' | 'blocked';
 
 export default function App() {
@@ -49,11 +55,14 @@ function Main() {
   const t = useTheme();
   const [ready, setReady] = useState(false);
   const [items, setItemsState] = useState<Item[]>([]);
+  const [routines, setRoutinesState] = useState<Routine[]>([]);
   const [settings, setSettingsState] = useState<Settings>(DEFAULT_SETTINGS);
   const [now, setNow] = useState(() => new Date());
   const today = dateKey(now);
   const [viewDate, setViewDate] = useState(today);
   const [busy, setBusy] = useState<Record<string, BusyEvent[]>>({});
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
   const [calStatus, setCalStatus] = useState<CalStatus>('unknown');
   const [calendars, setCalendars] = useState<calendar.CalendarChoice[]>([]);
   const [text, setText] = useState('');
@@ -63,6 +72,7 @@ function Main() {
 
   // Refs mirror state for async work (calendar sync) that outlives a render.
   const itemsRef = useRef(items);
+  const routinesRef = useRef(routines);
   const settingsRef = useRef(settings);
   const syncedRef = useRef<Item[]>([]); // what the phone calendar currently reflects
   const syncQueue = useRef(Promise.resolve());
@@ -74,6 +84,14 @@ function Main() {
     setItemsState(next);
     saveItems(next);
   }, []);
+
+  const setRoutines = useCallback((next: Routine[]) => {
+    routinesRef.current = next;
+    setRoutinesState(next);
+    saveRoutines(next);
+  }, []);
+
+  const snapshot = (): Snapshot => ({ items: itemsRef.current, routines: routinesRef.current, settings: settingsRef.current });
 
   /** Pushes the current items to the phone calendar, one sync at a time. */
   const syncToCalendar = useCallback(() => {
@@ -101,21 +119,35 @@ function Main() {
       const own = new Set(itemsRef.current.map((i) => i.eventId).filter((x): x is string => !!x));
       const loaded = await calendar.loadBusy(dates, own);
       setBusy((b) => ({ ...b, ...loaded }));
+      // Re-place auto-placed items now that we know what's in the calendar.
+      const today = dateKey(new Date());
+      let next = itemsRef.current;
+      const c: Ctx = { now: new Date(), settings: settingsRef.current, busy: loaded, viewDate: today };
+      for (const d of Object.keys(loaded)) if (d >= today) next = reflow(next, d, c);
+      if (next !== itemsRef.current && next.some((i, k) => i !== itemsRef.current[k])) {
+        setItems(next);
+        syncToCalendar();
+      }
       return loaded;
     } catch (e) {
       console.warn('Could not read calendar', e);
     }
-  }, []);
+  }, [setItems, syncToCalendar]);
 
   const updateSettings = useCallback(
     (patch: Partial<Settings>) => {
-      const next = { ...settingsRef.current, ...patch };
+      const prev = settingsRef.current;
+      const next = { ...prev, ...patch };
       settingsRef.current = next;
       setSettingsState(next);
       saveSettings(next);
-      if ('calendarId' in patch || 'calendarSync' in patch) syncToCalendar();
+      // New wake-up/bedtime: re-place auto-placed items to fit.
+      if (next.dayStart !== prev.dayStart || next.dayEnd !== prev.dayEnd) {
+        setItems(changeSettings(patch, itemsRef.current, { now: new Date(), settings: prev, busy: busyRef.current, viewDate: dateKey(new Date()) }));
+      }
+      syncToCalendar();
     },
-    [syncToCalendar],
+    [syncToCalendar, setItems],
   );
 
   /** Asks for calendar access and picks a calendar the first time. */
@@ -139,12 +171,18 @@ function Main() {
   // Load saved data, then hook up the calendar.
   useEffect(() => {
     (async () => {
-      const [loadedItems, loadedSettings] = await Promise.all([loadItems(dateKey(new Date())), loadSettings()]);
+      const [loadedItems, loadedSettings, loadedRoutines] = await Promise.all([
+        loadItems(dateKey(new Date())),
+        loadSettings(),
+        loadRoutines(),
+      ]);
       itemsRef.current = loadedItems;
       syncedRef.current = loadedItems;
       settingsRef.current = loadedSettings;
+      routinesRef.current = loadedRoutines;
       setItemsState(loadedItems);
       setSettingsState(loadedSettings);
+      setRoutinesState(loadedRoutines);
       setReady(true);
       if (loadedSettings.calendarSync) await connectCalendar();
     })();
@@ -177,6 +215,18 @@ function Main() {
     }
   }, [today, viewDate]);
 
+  // Fill in upcoming occurrences of repeating items (on launch and each new day).
+  useEffect(() => {
+    if (!ready || !routinesRef.current.length) return;
+    const c: Ctx = { now: new Date(), settings: settingsRef.current, busy: busyRef.current, viewDate: today };
+    const m = materialize(routinesRef.current, itemsRef.current, c);
+    if (m.routines.some((r, k) => r !== routinesRef.current[k])) setRoutines(m.routines);
+    if (m.added.length) {
+      setItems(m.items);
+      syncToCalendar();
+    }
+  }, [ready, today, setItems, setRoutines, syncToCalendar]);
+
   const ctx = useCallback(
     (b: Record<string, BusyEvent[]> = busy): Ctx => ({ now: new Date(), settings: settingsRef.current, busy: b, viewDate }),
     [busy, viewDate],
@@ -195,13 +245,21 @@ function Main() {
   }, []);
 
   const commit = useCallback(
-    (result: Result, before: Item[]) => {
-      if (result.message) showToast({ message: result.message, tone: result.tone, undo: result.items === before ? null : before });
-      if (result.items === before) return;
+    (result: Result, before: Snapshot) => {
+      const changed = result.items !== before.items || !!result.routines || !!result.settings;
+      if (result.message) showToast({ message: result.message, tone: result.tone, undo: changed ? before : null });
+      if (!changed) return;
+      if (result.routines) setRoutines(result.routines);
+      if (result.settings) {
+        const next = { ...settingsRef.current, ...result.settings };
+        settingsRef.current = next;
+        setSettingsState(next);
+        saveSettings(next);
+      }
       setItems(result.items);
       syncToCalendar();
     },
-    [setItems, showToast, syncToCalendar],
+    [setItems, setRoutines, showToast, syncToCalendar],
   );
 
   const submit = useCallback(async () => {
@@ -219,8 +277,8 @@ function Main() {
       const loaded = await refreshBusy([target]);
       if (loaded) b = { ...b, ...loaded };
     }
-    const before = itemsRef.current;
-    commit(applyCommand(cmd, before, ctx(b)), before);
+    const before = snapshot();
+    commit(applyCommand(cmd, before.items, ctx(b), before.routines), before);
     setText('');
   }, [text, viewDate, busy, calStatus, refreshBusy, commit, ctx, showToast]);
 
@@ -228,14 +286,19 @@ function Main() {
     if (!toast?.undo) return;
     // Items whose calendar event is already gone will get a fresh one on sync.
     const live = new Set(itemsRef.current.map((i) => i.eventId).filter(Boolean));
-    setItems(toast.undo.map((i) => (i.eventId && !live.has(i.eventId) ? { ...i, eventId: null } : i)));
+    const snap = toast.undo;
+    setItems(snap.items.map((i) => (i.eventId && !live.has(i.eventId) ? { ...i, eventId: null } : i)));
+    setRoutines(snap.routines);
+    settingsRef.current = snap.settings;
+    setSettingsState(snap.settings);
+    saveSettings(snap.settings);
     syncToCalendar();
     showToast({ message: 'Undone.', tone: 'ok', undo: null });
-  }, [toast, setItems, syncToCalendar, showToast]);
+  }, [toast, setItems, setRoutines, syncToCalendar, showToast]);
 
   const act = (fn: (items: Item[], c: Ctx) => Result) => {
-    const before = itemsRef.current;
-    commit(fn(before, ctx()), before);
+    const before = snapshot();
+    commit(fn(before.items, ctx()), before);
     setSelected(null);
   };
 
@@ -243,8 +306,8 @@ function Main() {
     if (!text.trim()) return null;
     const cmd = parseCommand(text, now, viewDate);
     if (cmd.kind === 'none') return null;
-    return applyCommand(cmd, items, { now, settings, busy, viewDate }).preview ?? null;
-  }, [text, now, viewDate, items, settings, busy]);
+    return applyCommand(cmd, items, { now, settings, busy, viewDate }, routines).preview ?? null;
+  }, [text, now, viewDate, items, settings, busy, routines]);
 
   const dayItems = items.filter((i) => i.date === viewDate);
   const oldOnes = viewDate === today ? leftovers(items, ctx()) : [];
@@ -359,6 +422,9 @@ function Main() {
           <Timeline
             theme={t}
             items={dayItems}
+            routines={routines}
+            wake={settings.dayStart}
+            bedtime={settings.dayEnd}
             busy={busy[viewDate] ?? []}
             nowMin={nowMin}
             isPast={viewDate < today}
@@ -376,12 +442,14 @@ function Main() {
         onToggle={(i) => act((it, c) => setDone(it, i.id, !i.done, c))}
         onLater={(i) => act((it, c) => pushLater(it, i.id, c))}
         onToday={(i) => act((it, c) => moveItem(it, i.id, { date: today, start: null, fixed: false, earliest: null }, c))}
-        onTomorrow={(i) =>
-          act((it, c) =>
-            moveItem(it, i.id, i.fixed ? { date: addDays(today, 1) } : { date: addDays(today, 1), start: null, earliest: null }, c),
-          )
-        }
+        onTomorrow={(i) => {
+          // The day after the item's day (items on past days go to tomorrow).
+          const date = addDays(i.date < today ? today : i.date, 1);
+          act((it, c) => moveItem(it, i.id, i.fixed ? { date } : { date, start: null }, c));
+        }}
         onDelete={(i) => act((it, c) => removeItem(it, i.id, c))}
+        routine={selected?.routineId ? routines.find((r) => r.id === selected.routineId) ?? null : null}
+        onStopRepeat={(r) => act((it, c) => stopRoutine(it, routinesRef.current, r.id, c))}
       />
       <SettingsSheet
         t={t}
@@ -389,6 +457,8 @@ function Main() {
         settings={settings}
         calendarStatus={calStatus}
         calendars={calendars}
+        routines={routines}
+        onStopRepeat={(r) => act((it, c) => stopRoutine(it, routinesRef.current, r.id, c))}
         onClose={() => setShowSettings(false)}
         onChange={updateSettings}
         onConnect={connectCalendar}

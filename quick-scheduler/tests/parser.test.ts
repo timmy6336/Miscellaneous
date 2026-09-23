@@ -18,6 +18,7 @@ function add(s: string) {
 test('plain task goes to the viewed day with no time', () => {
   assert.deepEqual(add('buy groceries'), {
     kind: 'add', title: 'Buy groceries', date: TODAY, start: null, duration: null, earliest: null,
+    latest: null, repeat: null, alsoOn: [],
   });
   assert.equal((p('water plants', '2026-09-25') as any).date, '2026-09-25');
 });
@@ -127,4 +128,77 @@ test('remove and done commands', () => {
   assert.equal((p('laundry is done') as any).query, 'Laundry');
   assert.equal(p('').kind, 'none');
   assert.equal(p('at 3pm').kind, 'none');
+});
+
+test('time windows: after / before / between', () => {
+  const a = add('groceries after 5pm');
+  assert.equal(a.title, 'Groceries');
+  assert.equal(a.start, null);
+  assert.equal(a.earliest, h(17));
+  assert.equal(add('groceries after 5').earliest, h(17));
+  assert.equal(add('call the bank before noon').latest, h(12));
+  assert.equal(add('pay bills by 3').latest, h(15));
+  const b = add('study between 2 and 4pm');
+  assert.equal(b.earliest, h(14));
+  assert.equal(b.latest, h(16));
+  assert.equal(b.title, 'Study');
+  assert.equal(add('run after work').earliest, h(17));
+  assert.equal(add('email Sam before lunch').latest, h(12));
+  const c = add('laundry after 5 before 8');
+  assert.equal(c.earliest, h(17));
+  assert.equal(c.latest, h(20));
+  // An exact time wins over a window.
+  assert.equal(add('gym at 6pm after work').start, h(18));
+});
+
+test('repeating items', () => {
+  const w = add('on Monday Tuesday Thursday Friday I want to workout from 5-6pm every week');
+  assert.equal(w.title, 'Workout');
+  assert.deepEqual(w.repeat, [1, 2, 4, 5]);
+  assert.equal(w.start, h(17));
+  assert.equal(w.duration, 60);
+
+  assert.deepEqual(add('standup weekdays at 9:30am').repeat, [1, 2, 3, 4, 5]);
+  assert.deepEqual(add('yoga tuesdays at 7pm').repeat, [2]);
+  assert.deepEqual(add('call grandma every sunday').repeat, [0]);
+  assert.deepEqual(add('mon, wed and fri gym at 6pm every week').repeat, [1, 3, 5]);
+  assert.deepEqual(add('team call every week at 3pm').repeat, [3]); // today is Wednesday
+  assert.equal(add('stretch every day at 9').start, h(9)); // not bumped to PM for repeats
+  const m = add('meditate every morning');
+  assert.deepEqual(m.repeat, [0, 1, 2, 3, 4, 5, 6]);
+  assert.equal(m.earliest, h(8));
+  assert.equal(m.title, 'Meditate');
+  assert.deepEqual(add('read daily after 9pm').repeat, [0, 1, 2, 3, 4, 5, 6]);
+});
+
+test('day lists without "every" are one-offs', () => {
+  const b = add('brunch sat and sun');
+  assert.equal(b.repeat, null);
+  assert.equal(b.date, '2026-09-26');
+  assert.deepEqual(b.alsoOn, ['2026-09-27']);
+  assert.equal(add('cleaning monday').date, '2026-09-28');
+  assert.equal(add('cleaning monday').repeat, null);
+  assert.equal(add('c\'mon get the mail').title, "C'mon get the mail");
+});
+
+test('wake-up and bedtime', () => {
+  const s = (x: string) => (p(x) as any).patch;
+  assert.deepEqual(s('I wake up at 6:30'), { dayStart: h(6, 30) });
+  assert.deepEqual(s('wake up at 7am'), { dayStart: h(7) });
+  assert.deepEqual(s('set wake time to 8'), { dayStart: h(8) });
+  assert.deepEqual(s('bedtime 11pm'), { dayEnd: h(23) });
+  assert.deepEqual(s('I usually go to bed at 10:30'), { dayEnd: h(22, 30) });
+  assert.deepEqual(s('sleep at midnight'), { dayEnd: 1440 });
+});
+
+test('stopping repeating items', () => {
+  const st = p('stop workout') as any;
+  assert.equal(st.kind, 'stopRepeat');
+  assert.equal(st.query, 'Workout');
+  assert.equal((p('cancel yoga every week') as any).kind, 'stopRepeat');
+  assert.equal((p('delete all the standups') as any).query, 'Standups');
+  assert.equal(p('cancel yoga').kind, 'remove');
+  const fb = (p('stop by the bank at 3pm') as any).fallback;
+  assert.equal(fb.title, 'Stop by the bank');
+  assert.equal(fb.start, h(15));
 });

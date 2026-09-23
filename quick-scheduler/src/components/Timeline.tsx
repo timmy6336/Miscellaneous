@@ -1,12 +1,17 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { fmtDuration, fmtTime } from '../dates';
+import { daysLabel } from '../scheduler';
 import { Theme } from '../theme';
-import { BusyEvent, Item } from '../types';
+import { BusyEvent, Item, Routine } from '../types';
 
 type Props = {
   theme: Theme;
   items: Item[];
+  routines: Routine[];
+  /** Wake-up time and bedtime, shown as the day's bookends. */
+  wake: number;
+  bedtime: number;
   busy: BusyEvent[];
   /** Minutes after midnight when the day shown is today, otherwise null. */
   nowMin: number | null;
@@ -17,7 +22,11 @@ type Props = {
 
 type Row = { kind: 'item'; item: Item; start: number } | { kind: 'busy'; ev: BusyEvent; start: number };
 
-export function Timeline({ theme: t, items, busy, nowMin, isPast, onPress, onToggle }: Props) {
+export function Timeline({ theme: t, items, routines, wake, bedtime, busy, nowMin, isPast, onPress, onToggle }: Props) {
+  const repeatLabel = (i: Item) => {
+    const r = i.routineId ? routines.find((x) => x.id === i.routineId) : null;
+    return r ? daysLabel(r.days) : null;
+  };
   const timed: Row[] = [
     ...items.filter((i) => i.start !== null).map((item) => ({ kind: 'item' as const, item, start: item.start! })),
     ...busy.map((ev) => ({ kind: 'busy' as const, ev, start: ev.start })),
@@ -34,7 +43,25 @@ export function Timeline({ theme: t, items, busy, nowMin, isPast, onPress, onTog
   );
 
   const rows: React.ReactNode[] = [];
+  const bookend = (key: string, icon: 'sunny-outline' | 'moon-outline', label: string, min: number) => (
+    <View key={key} style={styles.bookend}>
+      <Ionicons name={icon} size={14} color={t.muted} />
+      <Text style={[styles.bookendText, { color: t.muted }]}>
+        {label} · {fmtTime(min)}
+      </Text>
+    </View>
+  );
+  let wakeShown = false;
+  let bedShown = false;
   timed.forEach((r, idx) => {
+    if (!wakeShown && r.start >= wake) {
+      rows.push(bookend('wake', 'sunny-outline', 'Wake up', wake));
+      wakeShown = true;
+    }
+    if (!bedShown && r.start >= bedtime) {
+      rows.push(bookend('bed', 'moon-outline', 'Bedtime', bedtime));
+      bedShown = true;
+    }
     if (idx === nowIndex) rows.push(nowLine);
     rows.push(
       r.kind === 'busy' ? (
@@ -46,6 +73,7 @@ export function Timeline({ theme: t, items, busy, nowMin, isPast, onPress, onTog
           item={r.item}
           missed={!r.item.done && (isPast || (nowMin !== null && r.item.start! + r.item.duration <= nowMin))}
           current={!r.item.done && nowMin !== null && r.item.start! <= nowMin && nowMin < r.item.start! + r.item.duration}
+          repeat={repeatLabel(r.item)}
           onPress={onPress}
           onToggle={onToggle}
         />
@@ -53,6 +81,8 @@ export function Timeline({ theme: t, items, busy, nowMin, isPast, onPress, onTog
     );
   });
   if (nowMin !== null && nowIndex === -1) rows.push(nowLine);
+  if (!wakeShown) rows.unshift(bookend('wake', 'sunny-outline', 'Wake up', wake));
+  if (!bedShown) rows.push(bookend('bed', 'moon-outline', 'Bedtime', bedtime));
 
   return (
     <View>
@@ -61,7 +91,16 @@ export function Timeline({ theme: t, items, busy, nowMin, isPast, onPress, onTog
         <>
           <Text style={[styles.section, { color: t.muted }]}>ANYTIME</Text>
           {anytime.map((item) => (
-            <ItemRow key={item.id} t={t} item={item} missed={false} current={false} onPress={onPress} onToggle={onToggle} />
+            <ItemRow
+              key={item.id}
+              t={t}
+              item={item}
+              missed={false}
+              current={false}
+              repeat={repeatLabel(item)}
+              onPress={onPress}
+              onToggle={onToggle}
+            />
           ))}
         </>
       )}
@@ -74,6 +113,7 @@ function ItemRow({
   item,
   missed,
   current,
+  repeat,
   onPress,
   onToggle,
 }: {
@@ -81,6 +121,7 @@ function ItemRow({
   item: Item;
   missed: boolean;
   current: boolean;
+  repeat: string | null;
   onPress: (i: Item) => void;
   onToggle: (i: Item) => void;
 }) {
@@ -117,9 +158,14 @@ function ItemRow({
           {item.title}
         </Text>
         <View style={styles.metaRow}>
+          {repeat && (
+            <Text style={[styles.meta, { color: t.muted }]}>
+              <Ionicons name="repeat" size={11} /> {repeat}
+            </Text>
+          )}
           {!item.fixed && !item.done && (
             <Text style={[styles.meta, { color: t.muted }]}>
-              <Ionicons name="flash-outline" size={11} /> auto-placed
+              <Ionicons name="flash-outline" size={11} /> {windowText(item) ?? 'auto-placed'}
             </Text>
           )}
           {missed && <Text style={[styles.meta, { color: t.warn }]}>missed · tap to reschedule</Text>}
@@ -141,6 +187,15 @@ function ItemRow({
       </Pressable>
     </Pressable>
   );
+}
+
+function windowText(i: Item): string | null {
+  const lo = i.earliest ?? null;
+  const hi = i.latest ?? null;
+  if (lo !== null && hi !== null) return `${fmtTime(lo)}–${fmtTime(hi)}`;
+  if (lo !== null) return `after ${fmtTime(lo)}`;
+  if (hi !== null) return `before ${fmtTime(hi)}`;
+  return null;
 }
 
 function BusyRow({ t, ev }: { t: Theme; ev: BusyEvent }) {
@@ -180,7 +235,9 @@ const styles = StyleSheet.create({
   bar: { width: 4, alignSelf: 'stretch', borderRadius: 2 },
   body: { flex: 1 },
   title: { fontSize: 16, fontWeight: '500' },
-  metaRow: { flexDirection: 'row', gap: 8, marginTop: 2 },
+  metaRow: { flexDirection: 'row', flexWrap: 'wrap', columnGap: 10, marginTop: 2 },
+  bookend: { flexDirection: 'row', alignItems: 'center', gap: 6, marginLeft: 12, marginBottom: 8, marginTop: 2 },
+  bookendText: { fontSize: 12, fontWeight: '600' },
   meta: { fontSize: 12 },
   section: { fontSize: 12, fontWeight: '700', letterSpacing: 0.8, marginTop: 16, marginBottom: 8, marginLeft: 4 },
   nowRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8, marginTop: -2 },

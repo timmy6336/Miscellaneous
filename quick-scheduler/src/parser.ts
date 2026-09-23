@@ -20,6 +20,11 @@ export type AddCommand = {
   start: number | null;
   duration: number | null;
   earliest: number | null;
+  latest: number | null;
+  /** Weekdays (0 = Sunday) this repeats on, e.g. "every mon and wed". */
+  repeat: number[] | null;
+  /** Extra one-off days, e.g. "sat and sun" without "every". */
+  alsoOn: string[];
 };
 
 export type Command =
@@ -31,6 +36,7 @@ export type Command =
       start: number | null;
       duration: number | null;
       earliest: number | null;
+      latest: number | null;
       /** Minutes to shift by, e.g. "push gym back 30 min". */
       shift: number | null;
       /** "postpone gym" with no target: next free slot after it. */
@@ -39,6 +45,10 @@ export type Command =
     }
   | { kind: 'remove'; query: string; date: string | null; fallback: AddCommand | null }
   | { kind: 'done'; query: string; fallback: AddCommand | null }
+  /** "stop workout" — end a repeating item. */
+  | { kind: 'stopRepeat'; query: string; fallback: AddCommand | null }
+  /** "I wake up at 7", "bedtime 11pm". */
+  | { kind: 'setting'; patch: { dayStart?: number; dayEnd?: number } }
   | { kind: 'none' };
 
 type Meridiem = 'am' | 'pm' | null;
@@ -46,7 +56,15 @@ type ClockTime = { h: number; m: number; mer: Meridiem };
 
 type When = {
   dayOffset?: number;
-  weekday?: { dow: number; next: boolean };
+  /** Weekdays mentioned ("monday", "mon wed fri"); `next` = "next monday". */
+  days?: { dows: number[]; next: boolean };
+  /** "every ...", "weekly", "mondays" etc. */
+  recurring?: boolean;
+  /** Time window for flexible items: "after 5pm", "before noon". */
+  after?: ClockTime;
+  before?: ClockTime;
+  afterMin?: number;
+  beforeMin?: number;
   time?: ClockTime;
   endTime?: ClockTime;
   duration?: number;
@@ -65,12 +83,18 @@ const WORD_NUM: Record<string, number> = {
 const AMOUNT = String.raw`(\d+(?:\.\d+)?|half an?|an?|one|two|three|four|five|six|ten|fifteen|twenty|thirty|forty[- ]five)`;
 const UNIT = String.raw`(minutes?|mins?|hours?|hrs?|h|m)`;
 const MER = String.raw`(a\.?m\.?|p\.?m\.?)`;
-const AT = String.raw`(?:(?:\bat|\baround|\bby|@)\s*)`;
+const AT = String.raw`(?:(?:\bat|\baround|@)\s*)`;
+/** A clock time: "5", "5:30", "5pm", "noon", "midnight" (4 groups). */
+const CLOCK = String.raw`(?:(\d{1,2})(?::(\d{2}))?\s*${MER}?|(noon|midday|midnight))`;
+const NOT_DURATION = String.raw`(?!\s*(?:min|hour|hr|h\b|day|week|month))`;
 
 const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-const WEEKDAY_ABBR: Record<string, number> = {
-  sun: 0, mon: 1, tue: 2, tues: 2, wed: 3, weds: 3, thu: 4, thur: 4, thurs: 4, fri: 5, sat: 6,
-};
+const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
+const DAY_TOKEN = String.raw`(?:sundays?|mondays?|tuesdays?|wednesdays?|thursdays?|fridays?|saturdays?|tues|thurs|thur|weds|sun|mon|tue|wed|thu|fri|sat)`;
+const DOW_BY_PREFIX: Record<string, number> = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+// Named anchors for "after work", "before lunch", ...
+const NAMED_AFTER: Record<string, number> = { work: 17 * 60, school: 15 * 60 + 30, breakfast: 9 * 60, lunch: 13 * 60, dinner: 19 * 60 + 30 };
+const NAMED_BEFORE: Record<string, number> = { work: 8 * 60 + 30, school: 7 * 60 + 30, breakfast: 8 * 60, lunch: 12 * 60, dinner: 18 * 60 };
 const DAY_WORD = String.raw`(?:today|tonight|tomorrow|tmrw|tmr|${WEEKDAYS.join('|')})`;
 const TOMORROW = String.raw`(?:tomorrow|tmrw|tmr|tmro|tomorow|tommorow|tommorrow|2moro)`;
 
@@ -78,6 +102,14 @@ function amountToMinutes(amount: string, unit: string): number {
   const a = amount.toLowerCase();
   const n = WORD_NUM[a] ?? parseFloat(a);
   return Math.round(unit.toLowerCase().startsWith('h') ? n * 60 : n);
+}
+
+function clock(h?: string, mm?: string, mer?: string, word?: string): ClockTime | null {
+  if (word) return word.toLowerCase() === 'midnight' ? { h: 24, m: 0, mer: null } : { h: 12, m: 0, mer: 'pm' };
+  if (h === undefined) return null;
+  const t: ClockTime = { h: +h, m: +(mm ?? 0), mer: toMer(mer) };
+  if (t.h > 23 || t.m > 59 || (t.mer && (t.h < 1 || t.h > 12))) return null;
+  return t;
 }
 
 function toMer(s: string | undefined): Meridiem {
@@ -166,6 +198,56 @@ function extractWhen(input: string, mode: 'add' | 'move'): { rest: string; when:
     );
   }
 
+  // Time windows: "between 2 and 4pm", "after 5", "before noon", "after work".
+  take(new RegExp(String.raw`\bbetween\s+${CLOCK}\s*(?:and|-|–|to)\s*${CLOCK}(?=\W|$)`, 'i'), (m) => {
+    const a = clock(m[1], m[2], m[3], m[4]);
+    const b = clock(m[5], m[6], m[7], m[8]);
+    if (!a || !b) return false;
+    if (!a.mer && b.mer && a.h <= 12) {
+      a.mer = b.mer;
+      if (to24(a, undefined, null) >= to24(b, undefined, null)) a.mer = b.mer === 'pm' ? 'am' : 'pm';
+    }
+    when.after = a;
+    when.before = b;
+  });
+  take(/\b(after|before)\s+(work|school|breakfast|lunch|dinner)\b/i, (m) => {
+    const key = m[2].toLowerCase();
+    if (m[1].toLowerCase() === 'after') when.afterMin = NAMED_AFTER[key];
+    else when.beforeMin = NAMED_BEFORE[key];
+  });
+  take(new RegExp(String.raw`\b(?:after|not before|no earlier than)\s+${CLOCK}${NOT_DURATION}(?=\W|$)`, 'i'), (m) => {
+    const c = clock(m[1], m[2], m[3], m[4]);
+    if (!c) return false;
+    when.after = c;
+  });
+  take(new RegExp(String.raw`\b(?:before|by|no later than)\s+${CLOCK}${NOT_DURATION}(?=\W|$)`, 'i'), (m) => {
+    const c = clock(m[1], m[2], m[3], m[4]);
+    if (!c) return false;
+    when.before = c;
+  });
+
+  // Repeats: "every day", "weekdays", "every week", "every evening".
+  take(/\b(?:every\s*day|each\s+day|every\s+single\s+day|daily)\b/i, () => {
+    when.days = { dows: ALL_DAYS, next: false };
+    when.recurring = true;
+  });
+  take(/\b(?:every|each)\s+(morning|afternoon|evening|night)\b/i, (m) => {
+    when.days = { dows: ALL_DAYS, next: false };
+    when.recurring = true;
+    when.partOfDay = m[1].toLowerCase() as PartOfDay;
+  });
+  take(/\b(?:(?:every|each)\s+weekday|(?:on\s+)?weekdays)\b/i, () => {
+    when.days = { dows: [1, 2, 3, 4, 5], next: false };
+    when.recurring = true;
+  });
+  take(/\b(?:(?:every|each)\s+weekend|(?:on\s+)?weekends)\b/i, () => {
+    when.days = { dows: [0, 6], next: false };
+    when.recurring = true;
+  });
+  take(/\b(?:(?:every|each)\s+week|weekly|(?:on\s+)?a\s+weekly\s+basis)\b/i, () => {
+    when.recurring = true;
+  });
+
   // Part of day attached to a day: "tomorrow morning", "friday evening".
   take(
     new RegExp(String.raw`\b(${DAY_WORD})\s+(morning|afternoon|evening|night)\b`, 'i'),
@@ -196,13 +278,23 @@ function extractWhen(input: string, mode: 'add' | 'move'): { rest: string; when:
   take(/\btoday\b/i, () => {
     when.dayOffset ??= 0;
   });
-  take(new RegExp(String.raw`\b(?:(on|next|this)\s+)?(${WEEKDAYS.join('|')})\b`, 'i'), (m) => {
-    when.weekday = { dow: WEEKDAYS.indexOf(m[2].toLowerCase()), next: m[1]?.toLowerCase() === 'next' };
-  });
-  if (!when.weekday) {
-    take(new RegExp(String.raw`\b(on|next|this)\s+(${Object.keys(WEEKDAY_ABBR).join('|')})\b`, 'i'), (m) => {
-      when.weekday = { dow: WEEKDAY_ABBR[m[2].toLowerCase()], next: m[1].toLowerCase() === 'next' };
-    });
+  // Weekdays, alone or as a list: "friday", "on sat", "mon, wed and fri", "tuesdays".
+  if (!when.days) {
+    take(
+      new RegExp(
+        String.raw`\b(?:(on|every|each|next|this)\s+)?(${DAY_TOKEN}(?:(?:\s*[,/&]\s*|\s+(?:and|or)\s+|\s+)${DAY_TOKEN}\b)*)\b`,
+        'i',
+      ),
+      (m) => {
+        const prefix = m[1]?.toLowerCase();
+        const words = m[2].toLowerCase().split(/[^a-z]+/).filter((w) => w && w !== 'and' && w !== 'or');
+        // A lone abbreviation like "sat" or "sun" is too likely to be an ordinary word.
+        if (words.length === 1 && !prefix && !words[0].includes('day')) return false;
+        const dows = [...new Set(words.map((w) => DOW_BY_PREFIX[w.slice(0, 3)]))].sort();
+        when.days = { dows, next: prefix === 'next' };
+        if (prefix === 'every' || prefix === 'each' || words.some((w) => w.endsWith('days'))) when.recurring = true;
+      },
+    );
   }
 
   // Times.
@@ -269,17 +361,31 @@ export function cleanTitle(raw: string): string {
 /** Like cleanTitle, but also drops a leading "the"/"my" so it reads as a reference. */
 const cleanQuery = (raw: string) => cleanTitle(cleanTitle(raw).replace(/^(?:the|my|a|an|that|this)\s+/i, ''));
 
-function resolve(
-  when: When,
-  now: Date,
-  defaultDate: string,
-): { date: string | null; start: number | null; duration: number | null; earliest: number | null } {
+type Resolved = {
+  date: string | null;
+  start: number | null;
+  duration: number | null;
+  earliest: number | null;
+  latest: number | null;
+  repeat: number[] | null;
+  alsoOn: string[];
+};
+
+function resolve(when: When, now: Date, defaultDate: string): Resolved {
   const today = dateKey(now);
   const nowMin = minutesOf(now);
   let date: string | null = null;
   let start: number | null = null;
   let duration: number | null = when.duration ?? null;
   let earliest: number | null = null;
+  let latest: number | null = null;
+  let repeat: number[] | null = null;
+  let alsoOn: string[] = [];
+  const nextDow = (dow: number, forceNextWeek: boolean) => {
+    let diff = (dow - now.getDay() + 7) % 7;
+    if (diff === 0 && forceNextWeek) diff = 7;
+    return addDays(today, diff);
+  };
 
   if (when.relMinutes !== undefined) {
     const t = Math.ceil((nowMin + when.relMinutes) / 5) * 5;
@@ -288,15 +394,23 @@ function resolve(
   }
   if (when.dayOffset !== undefined) {
     date = addDays(today, when.dayOffset);
-  } else if (when.weekday) {
-    let diff = (when.weekday.dow - now.getDay() + 7) % 7;
-    if (diff === 0 && when.weekday.next) diff = 7;
-    date = addDays(today, diff);
+  }
+
+  if (when.recurring) {
+    const from = date ?? (defaultDate > today ? defaultDate : today);
+    repeat = when.days?.dows ?? [new Date(fromKeyParts(from)).getDay()];
+    date = from;
+  } else if (when.days && date === null) {
+    const dates = when.days.dows.map((d) => nextDow(d, when.days!.next)).sort();
+    date = dates[0];
+    alsoOn = dates.slice(1);
   }
 
   const effectiveDate = date ?? defaultDate;
+  // For "at 9" today, a time that already passed means PM; not for repeats.
+  const nowIfToday = effectiveDate === today && !repeat ? nowMin : null;
   if (when.time) {
-    start = to24(when.time, when.partOfDay, effectiveDate === today ? nowMin : null);
+    start = to24(when.time, when.partOfDay, nowIfToday);
     if (when.endTime) {
       let end = to24(when.endTime, when.partOfDay, null);
       while (end <= start) end += 12 * 60;
@@ -304,23 +418,71 @@ function resolve(
     }
   }
   if (start === null) {
-    if (when.partOfDay) earliest = PART_OF_DAY_START[when.partOfDay];
-    if (when.later && effectiveDate === today) earliest = Math.max(earliest ?? 0, nowMin + 60);
+    const lows: number[] = [];
+    if (when.partOfDay) lows.push(PART_OF_DAY_START[when.partOfDay]);
+    if (when.later && effectiveDate === today) lows.push(nowMin + 60);
+    if (when.afterMin !== undefined) lows.push(when.afterMin);
+    if (when.after) lows.push(to24(when.after, when.partOfDay, nowIfToday));
+    if (lows.length) earliest = Math.max(...lows);
+
+    const highs: number[] = [];
+    if (when.beforeMin !== undefined) highs.push(when.beforeMin);
+    if (when.before) {
+      let b = to24(when.before, when.partOfDay, nowIfToday);
+      // "after 5 before 8" -> 8pm, not 8am.
+      if (earliest !== null && b <= earliest && b + 720 <= 1440) b += 720;
+      highs.push(b);
+    }
+    if (highs.length) latest = Math.min(...highs);
   }
-  return { date, start, duration, earliest };
+  return { date, start, duration, earliest, latest, repeat, alsoOn };
 }
+
+const fromKeyParts = (key: string) => {
+  const [y, m, d] = key.split('-').map(Number);
+  return new Date(y, m - 1, d).getTime();
+};
 
 function parseAdd(text: string, now: Date, defaultDate: string): AddCommand | null {
   const { rest, when } = extractWhen(text, 'add');
   const title = cleanTitle(rest);
   if (!title) return null;
   const r = resolve(when, now, defaultDate);
-  return { kind: 'add', title, date: r.date ?? defaultDate, start: r.start, duration: r.duration, earliest: r.earliest };
+  return {
+    kind: 'add',
+    title,
+    date: r.date ?? defaultDate,
+    start: r.start,
+    duration: r.duration,
+    earliest: r.earliest,
+    latest: r.latest,
+    repeat: r.repeat,
+    alsoOn: r.alsoOn,
+  };
 }
+
+/** Wake-up / bedtime clock → minutes. Bare numbers mean AM for waking and PM for bed. */
+function settingMinutes(t: ClockTime, kind: 'wake' | 'sleep'): number {
+  if (kind === 'wake') return t.mer ? to24(t, undefined, null) : t.h * 60 + t.m;
+  let min = t.mer ? to24(t, undefined, null) : t.h >= 7 && t.h <= 11 ? (t.h + 12) * 60 + t.m : t.h * 60 + t.m;
+  if (min === 0 || min === 12 * 60 && !t.mer) min = 1440; // "midnight" / "12"
+  return min < 6 * 60 ? 1440 : Math.min(min, 1440); // past-midnight bedtimes are capped at midnight
+}
+
+const WAKE_RE = new RegExp(
+  String.raw`^(?:set\s+(?:my\s+)?)?(?:i\s+)?(?:usually\s+|normally\s+)?(?:wake(?:\s*-?\s*up)?|get\s+up)(?:\s+time)?(?:\s+(?:is|to))?\s+(?:at\s+|around\s+)?${CLOCK}(?:\s+every\s*day)?[.!]*$`,
+  'i',
+);
+const SLEEP_RE = new RegExp(
+  String.raw`^(?:set\s+(?:my\s+)?)?(?:i\s+)?(?:usually\s+|normally\s+)?(?:go\s+to\s+(?:bed|sleep)|sleep|bed\s*time|fall\s+asleep)(?:\s+time)?(?:\s+(?:is|to))?\s+(?:at\s+|around\s+)?${CLOCK}(?:\s+every\s*(?:day|night))?[.!]*$`,
+  'i',
+);
 
 const DONE_PREFIX = /^(?:i(?:'ve|'m| am| have)?\s+)?(?:done with|finished(?: with)?|completed?|did|mark(?:ed)?\s+(?:as\s+)?done:?|check(?:ed)? off|done:?)\s+(.+)$/i;
 const DONE_SUFFIX = /^(.+?)\s+(?:is\s+|are\s+)?(?:done|finished|completed?)[.!]*$/i;
 const REMOVE_PREFIX = /^(?:please\s+)?(?:cancel|remove|delete|unschedule|scratch|forget(?:\s+about)?|never\s?mind|nvm)\s+(.+)$/i;
+const STOP_PREFIX = /^(?:please\s+)?(?:stop(?:\s+repeating)?|end|no\s+more|quit)\s+(.+)$/i;
+const SERIES_WORDS = /\b(?:every\s*(?:week|day)|each\s+week|all(?:\s+of\s+them)?|recurring|repeating|repeats?|series|weekly|for\s+good|forever|permanently)\b/gi;
 const MOVE_PREFIX = /^(?:please\s+)?(?:move|reschedule|push|shift|bump|postpone|delay)\s+(.+)$/i;
 
 /**
@@ -331,6 +493,21 @@ export function parseCommand(input: string, now: Date, defaultDate: string): Com
   if (!text) return { kind: 'none' };
   const fallback = () => parseAdd(text, now, defaultDate);
 
+  for (const [re, kind] of [[WAKE_RE, 'wake'], [SLEEP_RE, 'sleep']] as const) {
+    const m = re.exec(text);
+    const c = m && clock(m[1], m[2], m[3], m[4]);
+    if (c) {
+      const min = settingMinutes(c, kind);
+      return { kind: 'setting', patch: kind === 'wake' ? { dayStart: min } : { dayEnd: min } };
+    }
+  }
+
+  const stop = STOP_PREFIX.exec(text);
+  if (stop) {
+    const query = cleanQuery(extractWhen(stop[1].replace(SERIES_WORDS, ' '), 'add').rest);
+    if (query) return { kind: 'stopRepeat', query, fallback: fallback() };
+  }
+
   const done = DONE_PREFIX.exec(text) ?? DONE_SUFFIX.exec(text);
   if (done) {
     const query = cleanQuery(done[1]);
@@ -338,11 +515,17 @@ export function parseCommand(input: string, now: Date, defaultDate: string): Com
   }
 
   const remove = REMOVE_PREFIX.exec(text);
+  if (remove && SERIES_WORDS.test(remove[1])) {
+    SERIES_WORDS.lastIndex = 0;
+    const query = cleanQuery(extractWhen(remove[1].replace(SERIES_WORDS, ' '), 'add').rest);
+    if (query) return { kind: 'stopRepeat', query, fallback: fallback() };
+  }
+  SERIES_WORDS.lastIndex = 0;
   if (remove) {
     const { rest, when } = extractWhen(remove[1], 'add');
     const query = cleanQuery(rest);
     if (query) {
-      const hasDay = when.dayOffset !== undefined || when.weekday !== undefined;
+      const hasDay = when.dayOffset !== undefined || when.days !== undefined;
       return { kind: 'remove', query, date: hasDay ? resolve(when, now, defaultDate).date : null, fallback: fallback() };
     }
   }
@@ -360,6 +543,7 @@ export function parseCommand(input: string, now: Date, defaultDate: string): Com
         start: r.start,
         duration: r.duration,
         earliest: r.earliest,
+        latest: r.latest,
         shift: when.shift ?? null,
         later: !!when.later && when.shift === undefined,
         fallback: fallback(),

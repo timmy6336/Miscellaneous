@@ -2,21 +2,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseCommand } from '../src/parser';
-import { applyCommand, bringToToday, Ctx, findSlot, pushLater, reflow, setDone } from '../src/scheduler';
-import { DEFAULT_SETTINGS, Item } from '../src/types';
+import { applyCommand, bringToToday, Ctx, findSlot, materialize, pushLater, reflow, setDone, stopRoutine } from '../src/scheduler';
+import { DEFAULT_SETTINGS, Item, Routine } from '../src/types';
 
 const NOW = new Date(2026, 8, 23, 13, 10); // Wed 1:10 PM
 const TODAY = '2026-09-23';
 const h = (hh: number, mm = 0) => hh * 60 + mm;
 const ctx = (over: Partial<Ctx> = {}): Ctx => ({ now: NOW, settings: DEFAULT_SETTINGS, busy: {}, viewDate: TODAY, ...over });
 
-function run(lines: string[], c = ctx(), items: Item[] = []) {
+function run(lines: string[], c = ctx(), items: Item[] = [], routines: Routine[] = []) {
   let last;
   for (const line of lines) {
-    last = applyCommand(parseCommand(line, c.now, c.viewDate), items, c);
+    last = applyCommand(parseCommand(line, c.now, c.viewDate), items, c, routines);
     items = last.items;
+    routines = last.routines ?? routines;
   }
-  return { items, last: last! };
+  return { items, routines, last: last! };
 }
 const byTitle = (items: Item[], t: string) => items.find((i) => i.title === t)!;
 
@@ -121,4 +122,92 @@ test('leftovers from earlier days can be brought into today', () => {
   const r = bringToToday([old], ctx());
   assert.equal(r.items[0].date, TODAY);
   assert.equal(r.items[0].start, h(13, 10));
+});
+
+test('"after 5pm" goes into the first free slot after 5', () => {
+  const { items } = run(['dinner at 5pm for 1 hour', 'groceries after 5pm']);
+  assert.equal(byTitle(items, 'Groceries').start, h(18));
+  assert.equal(byTitle(items, 'Groceries').fixed, false);
+});
+
+test('"before" limits when an item may end', () => {
+  const { items, last } = run(['call the bank before 2pm for 1 hour']); // it's 1:10 PM
+  assert.equal(items[0].start, null);
+  assert.match(last.message, /no free slot before 2:00 PM/);
+  const ok = run(['call the bank before 3pm for 1 hour']);
+  assert.equal(ok.items[0].start, h(13, 10));
+});
+
+test('nothing is auto-placed outside wake-up and bedtime', () => {
+  const settings = { ...DEFAULT_SETTINGS, dayStart: h(9), dayEnd: h(21) };
+  const tomorrow = run(['laundry tomorrow'], ctx({ settings }));
+  assert.equal(tomorrow.items[0].start, h(9));
+  const late = run(['long read for 2 hours'], ctx({ settings, now: new Date(2026, 8, 23, 19, 30) }));
+  assert.equal(late.items[0].start, null);
+  const warn = run(['call at 10:30pm'], ctx({ settings }));
+  assert.match(warn.last.message, /past your bedtime/);
+});
+
+test('changing wake-up time by typing moves auto-placed items', () => {
+  let { items } = run(['laundry tomorrow']);
+  assert.equal(items[0].start, h(7));
+  const r = run(['I wake up at 9'], ctx(), items);
+  assert.deepEqual(r.last.settings, { dayStart: h(9) });
+  assert.equal(r.items[0].start, h(9));
+});
+
+test('repeating workout fills the next 4 weeks and shows up on each day', () => {
+  const { items, routines, last } = run(['on Monday Tuesday Thursday Friday I want to workout from 5-6pm every week']);
+  assert.equal(routines.length, 1);
+  assert.equal(items.length, 16);
+  assert.ok(items.every((i) => i.title === 'Workout' && i.start === h(17) && i.duration === 60 && i.fixed));
+  assert.deepEqual([...new Set(items.map((i) => new Date(i.date + 'T12:00').getDay()))].sort(), [1, 2, 4, 5]);
+  assert.match(last.message, /Repeating: “Workout” every Mon, Tue, Thu, Fri · 5:00 PM – 6:00 PM\. Next: Tomorrow/);
+
+  // A week later, the next week gets filled in; deleted occurrences stay deleted.
+  const withoutOne = items.filter((i) => i.date !== '2026-09-24');
+  const weekLater = ctx({ now: new Date(2026, 8, 30, 8, 0) });
+  const m = materialize(routines, withoutOne, weekLater);
+  assert.equal(m.added.length, 4);
+  assert.ok(!m.items.some((i) => i.date === '2026-09-24'));
+});
+
+test('flexible repeats get placed around other things', () => {
+  const { items } = run(['dinner tomorrow at 5pm for 1 hour', 'walk every day after 5pm']);
+  const tomorrowWalk = items.find((i) => i.title === 'Walk' && i.date === '2026-09-24')!;
+  assert.equal(tomorrowWalk.start, h(18));
+});
+
+test('stopping a repeat removes upcoming occurrences but keeps finished ones', () => {
+  let { items, routines } = run(['yoga every day at 7am']);
+  const first = items.find((i) => i.date === '2026-09-24')!;
+  items = setDone(items, first.id, true, ctx()).items;
+  const r = run(['stop yoga'], ctx(), items, routines);
+  assert.equal(r.routines.length, 0);
+  assert.equal(r.items.length, 1);
+  assert.equal(r.items[0].done, true);
+  assert.match(r.last.message, /Stopped repeating “Yoga”/);
+  assert.equal(stopRoutine(items, [], 'nope', ctx()).tone, 'error');
+});
+
+test('removing one occurrence mentions how to stop the series', () => {
+  const { items, routines } = run(['piano every monday at 4pm']);
+  const r = run(['cancel piano'], ctx(), items, routines);
+  assert.equal(r.items.length, items.length - 1);
+  assert.equal(r.routines.length, 1);
+  assert.match(r.last.message, /stop piano/);
+});
+
+test('day lists without "every" add one item per day', () => {
+  const { items } = run(['brunch sat and sun at 11am']);
+  assert.deepEqual(items.map((i) => i.date).sort(), ['2026-09-26', '2026-09-27']);
+  assert.ok(items.every((i) => i.start === h(11) && !i.routineId));
+});
+
+test('leftovers skip missed occurrences of repeats', () => {
+  const missed: Item = {
+    id: 'r1', title: 'Workout', date: '2026-09-21', start: h(17), duration: 60, fixed: true,
+    earliest: null, done: false, createdAt: 0, routineId: 'x',
+  };
+  assert.equal(bringToToday([missed], ctx()).items[0].date, '2026-09-21');
 });

@@ -4,8 +4,9 @@ import { Modal, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 're
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CalendarChoice } from '../calendar';
 import { dayLabel, fmtRange, fmtTime } from '../dates';
+import { daysLabel, routineWhen } from '../scheduler';
 import { Theme } from '../theme';
-import { Item, Settings } from '../types';
+import { Item, Routine, Settings } from '../types';
 
 function Sheet({ t, visible, onClose, children }: { t: Theme; visible: boolean; onClose: () => void; children: ReactNode }) {
   const insets = useSafeAreaInsets();
@@ -56,9 +57,13 @@ export function ItemSheet({
   onTomorrow,
   onToday,
   onDelete,
+  routine,
+  onStopRepeat,
 }: {
   t: Theme;
   item: Item | null;
+  routine: Routine | null;
+  onStopRepeat: (r: Routine) => void;
   today: string;
   onClose: () => void;
   onToggle: (i: Item) => void;
@@ -77,11 +82,17 @@ export function ItemSheet({
             {item.start !== null ? ` · ${fmtRange(item.start, item.duration)}` : ' · anytime'}
             {item.fixed ? '' : ' · auto-placed'}
           </Text>
+          {routine && (
+            <Text style={[styles.sheetSub, { color: t.muted, marginTop: -8 }]}>
+              <Ionicons name="repeat" size={13} /> Repeats {daysLabel(routine.days)}
+            </Text>
+          )}
           <Action t={t} icon={item.done ? 'arrow-undo-outline' : 'checkmark-circle-outline'} label={item.done ? 'Mark not done' : 'Mark done'} onPress={() => onToggle(item)} />
           {!item.done && <Action t={t} icon="play-forward-outline" label="Later — next free slot" onPress={() => onLater(item)} />}
           {!item.done && item.date !== today && <Action t={t} icon="today-outline" label="Move to today" onPress={() => onToday(item)} />}
-          {!item.done && <Action t={t} icon="arrow-forward-circle-outline" label="Move to tomorrow" onPress={() => onTomorrow(item)} />}
-          <Action t={t} icon="trash-outline" label="Delete" danger onPress={() => onDelete(item)} />
+          {!item.done && <Action t={t} icon="arrow-forward-circle-outline" label={item.date <= today ? 'Move to tomorrow' : 'Move to the next day'} onPress={() => onTomorrow(item)} />}
+          <Action t={t} icon="trash-outline" label={routine ? 'Delete just this one' : 'Delete'} danger onPress={() => onDelete(item)} />
+          {routine && <Action t={t} icon="stop-circle-outline" label="Stop repeating (remove upcoming)" danger onPress={() => onStopRepeat(routine)} />}
           <Text style={[styles.tip, { color: t.muted }]}>
             Tip: you can also type things like “move {item.title.toLowerCase()} to 5pm”.
           </Text>
@@ -126,11 +137,11 @@ function Stepper({ t, label, value, onChange }: { t: Theme; label: string; value
   return (
     <View style={styles.stepper}>
       <Text style={{ color: t.text, flex: 1 }}>{label}</Text>
-      <Pressable onPress={() => onChange(value - 30)} hitSlop={8} accessibilityLabel={`${label} earlier`}>
+      <Pressable onPress={() => onChange(value - 15)} hitSlop={8} accessibilityLabel={`${label} earlier`}>
         <Ionicons name="remove-circle-outline" size={28} color={t.accent} />
       </Pressable>
       <Text style={[styles.stepValue, { color: t.text }]}>{fmtTime(value)}</Text>
-      <Pressable onPress={() => onChange(value + 30)} hitSlop={8} accessibilityLabel={`${label} later`}>
+      <Pressable onPress={() => onChange(value + 15)} hitSlop={8} accessibilityLabel={`${label} later`}>
         <Ionicons name="add-circle-outline" size={28} color={t.accent} />
       </Pressable>
     </View>
@@ -141,7 +152,12 @@ const EXAMPLES = [
   'groceries',
   'call mom at 5',
   'dentist tomorrow 2-3pm',
+  'groceries after 5pm',
+  'pay bills before noon',
   'gym this evening for an hour',
+  'workout mon tue thu fri 5-6pm every week',
+  'stop workout',
+  'I wake up at 6:30 / bedtime 11pm',
   'check the oven in 20 min',
   'move gym to 7pm',
   'push laundry back 30 min',
@@ -155,6 +171,8 @@ export function SettingsSheet({
   settings,
   calendarStatus,
   calendars,
+  routines,
+  onStopRepeat,
   onClose,
   onChange,
   onConnect,
@@ -165,6 +183,8 @@ export function SettingsSheet({
   settings: Settings;
   calendarStatus: 'unknown' | 'granted' | 'denied' | 'blocked';
   calendars: CalendarChoice[];
+  routines: Routine[];
+  onStopRepeat: (r: Routine) => void;
   onClose: () => void;
   onChange: (patch: Partial<Settings>) => void;
   onConnect: () => void;
@@ -175,6 +195,31 @@ export function SettingsSheet({
     <Sheet t={t} visible={visible} onClose={onClose}>
       <ScrollView style={{ maxHeight: 560 }} contentContainerStyle={{ paddingBottom: 8 }}>
         <Text style={[styles.sheetTitle, { color: t.text }]}>Settings</Text>
+
+        <Text style={[styles.label, { color: t.muted }]}>YOUR DAY</Text>
+        <Stepper t={t} label="Wake up" value={settings.dayStart} onChange={(v) => set({ dayStart: Math.max(0, Math.min(v, settings.dayEnd - 60)) })} />
+        <Stepper t={t} label="Bedtime" value={settings.dayEnd} onChange={(v) => set({ dayEnd: Math.min(1440, Math.max(v, settings.dayStart + 60)) })} />
+        <Text style={[styles.hint, { color: t.muted }]}>Nothing gets auto-placed before you wake up or after bedtime. You can also type “I wake up at 7”.</Text>
+
+        <Text style={[styles.label, { color: t.muted }]}>REPEATING</Text>
+        {routines.length === 0 ? (
+          <Text style={[styles.hint, { color: t.muted }]}>Nothing yet. Try “workout mon wed fri 5-6pm every week”.</Text>
+        ) : (
+          routines.map((r) => (
+            <View key={r.id} style={styles.calRow}>
+              <Ionicons name="repeat" size={18} color={t.accent} />
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: t.text }}>{r.title}</Text>
+                <Text style={{ color: t.muted, fontSize: 12 }}>
+                  {daysLabel(r.days)} · {routineWhen(r)}
+                </Text>
+              </View>
+              <Pressable onPress={() => onStopRepeat(r)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Stop repeating ${r.title}`}>
+                <Text style={{ color: t.error, fontWeight: '600' }}>Stop</Text>
+              </Pressable>
+            </View>
+          ))
+        )}
 
         <Text style={[styles.label, { color: t.muted }]}>PHONE CALENDAR</Text>
         <View style={styles.stepper}>
@@ -237,9 +282,6 @@ export function SettingsSheet({
           options={[15, 30, 45, 60, 90].map((m) => ({ value: m, label: m < 60 ? `${m} min` : `${m / 60}h`.replace('1.5h', '1½h') }))}
         />
 
-        <Text style={[styles.label, { color: t.muted }]}>AUTO-PLACE ITEMS BETWEEN</Text>
-        <Stepper t={t} label="From" value={settings.dayStart} onChange={(v) => set({ dayStart: Math.max(0, Math.min(v, settings.dayEnd - 60)) })} />
-        <Stepper t={t} label="Until" value={settings.dayEnd} onChange={(v) => set({ dayEnd: Math.min(1440, Math.max(v, settings.dayStart + 60)) })} />
 
         <Text style={[styles.label, { color: t.muted }]}>THINGS YOU CAN TYPE</Text>
         {EXAMPLES.map((e) => (

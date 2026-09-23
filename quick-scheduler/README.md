@@ -4,6 +4,9 @@ Open the app, type what you want to do, and it goes on your schedule.
 
 - **No time given** (“groceries”) → it goes in the next free slot.
 - **A time given** (“call mom at 5”, “dentist tomorrow 2-3pm”) → it's pinned to that time, and anything auto-placed moves out of the way.
+- **A time window** (“groceries after 5pm”, “pay bills before noon”, “study between 2 and 4”) → first free slot inside that window.
+- **Repeating** (“workout mon tue thu fri 5-6pm every week”, “standup weekdays at 9:30”) → added on those days every week.
+- **Wake-up and bedtime** (“I wake up at 7”, “bedtime 11pm”, or in Settings) → nothing gets auto-placed outside them.
 - **Change your mind** (“move gym to 7pm”, “push laundry back 30 min”, “cancel dentist”, “done groceries”) → the schedule adjusts.
 - **Phone calendar**: timed items are added to your calendar with an alert, so your calendar app sends the reminder notifications. Existing events (meetings etc.) are read as busy time, so nothing gets auto-placed on top of them.
 
@@ -30,12 +33,22 @@ Newer builds install over older ones and keep your data.
 | `gym this evening for 1h` | First free hour after 5 PM |
 | `check the oven in 20 min` | 20 minutes from now |
 | `haircut friday`, `brunch next sat` | That day, next free slot |
+| `brunch sat and sun at 11` | One item on each of those days |
+| `groceries after 5pm`, `run after work` | First free slot after 5 PM |
+| `pay bills before 3`, `email Sam by noon` | First free slot that ends by then |
+| `study between 2 and 4pm` | First free slot in that window |
+| `on Monday Tuesday Thursday Friday I want to workout from 5-6pm every week` | Repeats Mon/Tue/Thu/Fri, 5–6 PM |
+| `yoga tuesdays at 7pm`, `standup weekdays at 9:30am`, `meditate every morning` | Repeating items |
+| `stop workout`, `cancel yoga every week` | Ends a repeat and removes its upcoming occurrences |
+| `I wake up at 6:30`, `bedtime 11pm` | Sets your day; auto-placed items re-fit |
 | `move gym to 7pm`, `reschedule dentist to tomorrow` | Moves the matching item |
 | `push laundry back 30 min`, `move call earlier by an hour` | Shifts it |
 | `postpone groceries` | Next free slot after it |
 | `cancel dentist`, `done groceries`, `move it to 6` | Matches items loosely; “it” = the last thing added |
 
-Tap an item to mark it done, push it later, move it to tomorrow or delete it. The day header arrows switch days.
+Tap an item to mark it done, push it later, move it to the next day or delete it (for a repeat: just that one, or stop the whole series). The day header arrows switch days.
+
+**How repeats work:** occurrences are created 4 weeks ahead (topped up each time you open the app on a new day) and each one is a normal item and calendar event, so you can move, finish or delete one without touching the rest. Settings lists your repeating items with a Stop button.
 
 ## Development
 
