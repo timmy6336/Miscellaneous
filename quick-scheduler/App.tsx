@@ -292,7 +292,7 @@ function Main() {
       // The rules missed something: let the on-device model have a go.
       setThinking(true);
       try {
-        const raw = await model.understand(input, itemsRef.current, new Date(), viewDate);
+        const raw = await model.understand(input, itemsRef.current, new Date());
         const fromAi = answerToCommand(raw, input, new Date(), viewDate);
         if (fromAi) {
           cmd = fromAi;

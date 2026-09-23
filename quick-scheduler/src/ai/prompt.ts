@@ -1,148 +1,219 @@
 // Everything the on-device model needs, as pure code: the prompt, the JSON
 // shape it must answer in, and turning that answer into a normal Command.
-// The model only *understands* the note; placing things in free time is still
-// done by the scheduler. Shared by the app and scripts/ai-eval.mts.
+//
+// A 1B model is bad at converting ("530pm" -> "17:30", "friday" -> a date) but
+// decent at copying words out of the note. So it fills in a form with phrases
+// copied from the note, and the rule-based parser turns those phrases into
+// times and dates. Placing things in free time is still done by the scheduler.
+// Shared by the app and scripts/ai-eval.mts.
 
-import { addDays, dateKey, fmtTime, fromKey, minutesOf } from '../dates';
+import { addDays, dateKey, fromKey } from '../dates';
 import { AddCommand, Command, parseCommand } from '../parser';
 import { Item } from '../types';
 
-const DOW = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
-const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-const HHMM = /^([01]?\d|2[0-3]):([0-5]\d)$/;
+const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] as const;
+const DAYS = ['today', 'tomorrow', ...WEEKDAYS] as const;
+const REPEATS = [...WEEKDAYS, 'every day', 'weekdays', 'weekends'] as const;
+const ACTIONS = ['add', 'move', 'remove', 'done', 'stop_repeat', 'set_wake', 'set_bedtime'] as const;
 
-/** What the model answers with. */
+/** What the model answers with: mostly phrases copied from the note. */
 export type AiAnswer = {
-  action: 'add' | 'move' | 'remove' | 'done' | 'stop_repeat' | 'set_wake' | 'set_bedtime';
+  action: (typeof ACTIONS)[number];
   title: string;
-  date: string | null;
+  day: (typeof DAYS)[number] | null;
   start: string | null;
   end: string | null;
-  duration_min: number | null;
   after: string | null;
   before: string | null;
-  repeat_days: (typeof DOW)[number][];
+  duration: string | null;
+  repeat: (typeof REPEATS)[number][];
   every_other_week: boolean;
 };
 
 // oneOf (rather than a type array) works with both llama.rn and node-llama-cpp.
-const nullable = (type: string) => ({ oneOf: [{ type }, { type: 'null' }] });
+const nullable = (schema: object) => ({ oneOf: [schema, { type: 'null' }] });
+const phrase = nullable({ type: 'string' });
 
 /** JSON schema used to constrain decoding, so the output always parses. */
 export const ANSWER_SCHEMA = {
   type: 'object',
   properties: {
-    action: { type: 'string', enum: ['add', 'move', 'remove', 'done', 'stop_repeat', 'set_wake', 'set_bedtime'] },
+    action: { type: 'string', enum: [...ACTIONS] },
     title: { type: 'string' },
-    date: nullable('string'),
-    start: nullable('string'),
-    end: nullable('string'),
-    duration_min: nullable('integer'),
-    after: nullable('string'),
-    before: nullable('string'),
-    repeat_days: { type: 'array', items: { type: 'string', enum: [...DOW] } },
+    day: nullable({ type: 'string', enum: [...DAYS] }),
+    start: phrase,
+    end: phrase,
+    after: phrase,
+    before: phrase,
+    duration: phrase,
+    repeat: { type: 'array', items: { type: 'string', enum: [...REPEATS] } },
     every_other_week: { type: 'boolean' },
   },
-  required: ['action', 'title', 'date', 'start', 'end', 'duration_min', 'after', 'before', 'repeat_days', 'every_other_week'],
+  required: ['action', 'title', 'day', 'start', 'end', 'after', 'before', 'duration', 'repeat', 'every_other_week'],
 } as const;
 
-// Kept fixed (no dates or schedule in it) so the model can reuse its cache
-// for this part between messages.
-export const SYSTEM_PROMPT = `You turn a short note into one scheduling action. Answer with JSON only.
+export const SYSTEM_PROMPT = `You fill in a form for a day planner from the user's note. Answer with JSON only. Copy words from the note. Never add anything the note does not say.
 
-Fields:
-- action: "add" = plan something new. "move" = change the time or day of something already planned. "remove" = cancel one planned thing. "done" = the user finished something. "stop_repeat" = stop a repeating thing for good. "set_wake" / "set_bedtime" = the user says when they wake up or go to bed.
-- title: short name with a capital letter, e.g. "Work out", "Call mom", "Dentist". Leave out times, days and words like "I want to". For move/remove/done/stop_repeat use the planned thing's name.
-- date: "YYYY-MM-DD" copied from the calendar in the message, only if the note names a day. Otherwise null.
-- start, end: 24-hour "HH:MM" only if the note says a time. 530pm = "17:30", 9am = "09:00", noon = "12:00". A bare 1 to 6 means afternoon. For set_wake/set_bedtime put the time in start.
-- duration_min: minutes, only if the note says how long.
-- after, before: "HH:MM" for "after 5pm" / "before noon" / "between 2 and 4pm". "after work" = "17:00".
-- repeat_days: days it repeats on, e.g. ["mon","wed"]. "every day"/"daily" = all seven. "weekdays" = mon to fri. A list of several days means it repeats. Empty if it does not repeat.
-- every_other_week: true only for "every other week".
-Never make up a time or day that the note does not say.
+action: "add" = a new plan. "move" = change the time or day of one of the listed plans. "remove" = cancel a listed plan. "done" = the user finished a listed plan. "stop_repeat" = stop a repeating plan for good. "set_wake" / "set_bedtime" = when the user wakes up or goes to bed.
+title: the plan in a few words. For move, remove, done and stop_repeat: the name of the listed plan.
+day: the day the note names, else null.
+start, end: the times exactly as written in the note, like "530pm" or "9". Else null.
+after, before: a time limit as written, like after "5pm" or before "noon". Else null.
+duration: how long, as written, like "2 hours". Else null.
+repeat: the days it repeats on. Only when the note says every/each/daily/weekly or lists several days. Else [].
+every_other_week: true only for "every other week".`;
 
-Examples:
-Note: groceries
-{"action":"add","title":"Groceries","date":null,"start":null,"end":null,"duration_min":null,"after":null,"before":null,"repeat_days":[],"every_other_week":false}
-Note: I work out mon tue thursday fri from 530pm to 630pm
-{"action":"add","title":"Work out","date":null,"start":"17:30","end":"18:30","duration_min":null,"after":null,"before":null,"repeat_days":["mon","tue","thu","fri"],"every_other_week":false}
-Note: pay bills after 5 for 20 min
-{"action":"add","title":"Pay bills","date":null,"start":null,"end":null,"duration_min":20,"after":"17:00","before":null,"repeat_days":[],"every_other_week":false}
-Note: push the dentist to friday at 3
-{"action":"move","title":"Dentist","date":"<friday's date>","start":"15:00","end":null,"duration_min":null,"after":null,"before":null,"repeat_days":[],"every_other_week":false}`;
+type Example = { note: string; answer: Partial<AiAnswer> };
 
-/** The per-message part: today, a short calendar, the relevant schedule and the note. */
-export function buildUserMessage(note: string, items: Item[], now: Date, viewDate: string): string {
-  const today = dateKey(now);
-  const calendar: string[] = [];
-  for (let i = 0; i < 8; i++) {
-    const d = addDays(today, i);
-    calendar.push(`${DAY_NAMES[fromKey(d).getDay()]} ${d}${i === 0 ? ' (today)' : i === 1 ? ' (tomorrow)' : ''}`);
-  }
-  const upcoming = items
-    .filter((i) => !i.done && i.date >= today && i.date <= addDays(today, 7))
-    .sort((a, b) => a.date.localeCompare(b.date) || (a.start ?? 1e9) - (b.start ?? 1e9))
-    // One line per repeating item is enough context.
-    .filter((i, idx, all) => !i.routineId || all.findIndex((x) => x.routineId === i.routineId) === idx)
-    .slice(0, 12)
-    .map((i) => {
-      const when = i.start === null ? 'anytime' : `${fmtTime(i.start)}–${fmtTime(i.start + i.duration)}`;
-      return `- ${DAY_NAMES[fromKey(i.date).getDay()].slice(0, 3)} ${i.date} ${when}: ${i.title}${i.routineId ? ' (repeats)' : ''}`;
-    });
-  return [
-    `Now: ${DAY_NAMES[now.getDay()]} ${today}, ${fmtTime(minutesOf(now))}.${viewDate !== today ? ` Looking at ${viewDate}.` : ''}`,
-    `Calendar: ${calendar.join('; ')}`,
-    `Planned:\n${upcoming.length ? upcoming.join('\n') : '- nothing yet'}`,
-    `Note: ${note.trim()}`,
-  ].join('\n');
-}
+const EXAMPLE_PLANS = 'Plans: Gym (today), Laundry (today), Dentist (friday), Work out (repeats)';
 
-const toMin = (s: string | null | undefined): number | null => {
-  const m = s ? HHMM.exec(s.trim()) : null;
-  return m ? +m[1] * 60 + +m[2] : null;
+const EXAMPLES: Example[] = [
+  { note: 'groceries', answer: { action: 'add', title: 'Groceries' } },
+  {
+    note: 'I work out mon tue thursday fri from 530pm to 630pm',
+    answer: { action: 'add', title: 'Work out', start: '530pm', end: '630pm', repeat: ['monday', 'tuesday', 'thursday', 'friday'] },
+  },
+  { note: 'dentist tomorrow at 10am for an hour', answer: { action: 'add', title: 'Dentist', day: 'tomorrow', start: '10am', duration: 'an hour' } },
+  { note: 'pay bills after 5', answer: { action: 'add', title: 'Pay bills', after: '5' } },
+  { note: 'standup every weekday at 9:30', answer: { action: 'add', title: 'Standup', start: '9:30', repeat: ['weekdays'] } },
+  { note: 'push the dentist to friday at 4', answer: { action: 'move', title: 'Dentist', day: 'friday', start: '4' } },
+  { note: "can't make the gym", answer: { action: 'remove', title: 'Gym' } },
+  { note: 'finished the laundry', answer: { action: 'done', title: 'Laundry' } },
+  { note: 'no more workouts', answer: { action: 'stop_repeat', title: 'Work out' } },
+  { note: 'I get up at 6:30', answer: { action: 'set_wake', title: 'Wake up', start: '6:30' } },
+];
+
+const EMPTY: AiAnswer = {
+  action: 'add',
+  title: '',
+  day: null,
+  start: null,
+  end: null,
+  after: null,
+  before: null,
+  duration: null,
+  repeat: [],
+  every_other_week: false,
 };
 
-// Words that show the note really mentions a time or a day. If they're absent
-// we ignore any time/day the model came up with.
-const TIME_HINT = /\d|\b(noon|midday|midnight|morning|afternoon|evening|tonight|night|lunch|dinner|breakfast|work|school|bed|later|early|late)\b/i;
-const DAY_HINT =
-  /\b(today|tonight|tomorrow|tmrw?|tmro|mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat|sun|\w+day|\w+days|week|weekly|weekend|daily|next|\d{1,2}(st|nd|rd|th)|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i;
+export type AiMessage = { role: 'system' | 'user' | 'assistant'; content: string };
+
+const userTurn = (plans: string, note: string) => `${plans}\nNote: ${note.trim()}`;
+
+/** The plans the model may refer to: names only, with a rough day. */
+export function plansLine(items: Item[], now: Date): string {
+  const today = dateKey(now);
+  const seen = new Set<string>();
+  const plans: string[] = [];
+  const upcoming = items
+    .filter((i) => !i.done && i.date >= today && i.date <= addDays(today, 7))
+    .sort((a, b) => a.date.localeCompare(b.date) || (a.start ?? 1e9) - (b.start ?? 1e9));
+  for (const i of upcoming) {
+    if (seen.has(i.title.toLowerCase()) || plans.length >= 10) continue;
+    seen.add(i.title.toLowerCase());
+    const when = i.routineId ? 'repeats' : i.date === today ? 'today' : i.date === addDays(today, 1) ? 'tomorrow' : WEEKDAYS[fromKey(i.date).getDay()];
+    plans.push(`${i.title} (${when})`);
+  }
+  return `Plans: ${plans.length ? plans.join(', ') : 'none'}`;
+}
 
 /**
- * Turns the model's answer into a Command, cross-checked against the rule-based
- * parser. Returns null when the answer is unusable (the caller then falls back
- * to the rules).
+ * System prompt + example turns (identical every time, so they stay cached)
+ * + the real note.
+ */
+export function buildMessages(note: string, items: Item[], now: Date): AiMessage[] {
+  const messages: AiMessage[] = [{ role: 'system', content: SYSTEM_PROMPT }];
+  for (const ex of EXAMPLES) {
+    messages.push({ role: 'user', content: userTurn(EXAMPLE_PLANS, ex.note) });
+    messages.push({ role: 'assistant', content: JSON.stringify({ ...EMPTY, ...ex.answer }) });
+  }
+  messages.push({ role: 'user', content: userTurn(plansLine(items, now), note) });
+  return messages;
+}
+
+// ---------------------------------------------------------------------------
+// Turning the answer into a Command.
+
+const squash = (s: string) => s.toLowerCase().replace(/[^a-z0-9:]/g, '');
+
+/** Only accept a phrase if it really appears in the note (no made-up times). */
+function fromNote(value: string | null | undefined, note: string): string | null {
+  if (!value || !value.trim()) return null;
+  const v = squash(value);
+  return v && squash(note).includes(v) ? value.trim() : null;
+}
+
+/** Reads a time phrase like "530pm", "9" or "noon" with the rule-based parser. */
+function timeOf(value: string | null, now: Date, date: string): number | null {
+  if (!value) return null;
+  const c = parseCommand(`x at ${value}`, now, date);
+  return c.kind === 'add' ? c.start : null;
+}
+
+function durationOf(value: string | null, now: Date, date: string): number | null {
+  if (!value) return null;
+  const c = parseCommand(`x for ${value}`, now, date);
+  return c.kind === 'add' ? c.duration : null;
+}
+
+const DAY_ABBR: Record<string, RegExp> = Object.fromEntries(
+  WEEKDAYS.map((d) => [d, new RegExp(String.raw`\b${d.slice(0, 3)}`, 'i')]),
+);
+
+function dayToDate(day: AiAnswer['day'], note: string, now: Date): string | null {
+  if (!day) return null;
+  const today = dateKey(now);
+  if (day === 'today') return /\b(today|tonight)\b/i.test(note) ? today : null;
+  if (day === 'tomorrow') return /\b(tomorrow|tmrw?|tmro|tomorow|tommorow)\b/i.test(note) ? addDays(today, 1) : null;
+  if (!DAY_ABBR[day]?.test(note)) return null;
+  const diff = (WEEKDAYS.indexOf(day) - now.getDay() + 7) % 7;
+  return addDays(today, diff);
+}
+
+function repeatDays(repeat: AiAnswer['repeat'] | undefined, note: string): number[] {
+  const out = new Set<number>();
+  for (const r of repeat ?? []) {
+    if (r === 'every day' && /\b(every\s*day|daily|each day|every (morning|evening|night))\b/i.test(note)) [0, 1, 2, 3, 4, 5, 6].forEach((d) => out.add(d));
+    else if (r === 'weekdays' && /\bweekdays?\b|\bmon\w*\s*(-|to|through|thru)\s*fri/i.test(note)) [1, 2, 3, 4, 5].forEach((d) => out.add(d));
+    else if (r === 'weekends' && /\bweekends?\b/i.test(note)) [0, 6].forEach((d) => out.add(d));
+    else if ((WEEKDAYS as readonly string[]).includes(r) && DAY_ABBR[r].test(note)) out.add(WEEKDAYS.indexOf(r as (typeof WEEKDAYS)[number]));
+  }
+  return [...out].sort();
+}
+
+/**
+ * Turns the model's answer into a Command. Everything it says is checked
+ * against the note, and exact times the rules find win. Returns null when the
+ * answer is unusable (the caller then falls back to the rules).
  */
 export function answerToCommand(raw: unknown, note: string, now: Date, viewDate: string): Command | null {
   const a = raw as Partial<AiAnswer> | null;
-  if (!a || typeof a !== 'object' || typeof a.action !== 'string') return null;
+  if (!a || typeof a !== 'object' || !ACTIONS.includes(a.action as AiAnswer['action'])) return null;
   const title = (a.title ?? '').trim().replace(/^./, (c) => c.toUpperCase());
   const rules = parseCommand(note, now, viewDate);
+  const ruleAdd = rules.kind === 'add' ? rules : 'fallback' in rules ? rules.fallback : null;
   const today = dateKey(now);
 
-  const hasTime = TIME_HINT.test(note);
-  const hasDay = DAY_HINT.test(note);
-  let start = hasTime ? toMin(a.start) : null;
-  let end = hasTime ? toMin(a.end) : null;
-  const after = hasTime ? toMin(a.after) : null;
-  const before = hasTime ? toMin(a.before) : null;
-  const inRange = (d: string | null | undefined) =>
-    !!d && /^\d{4}-\d{2}-\d{2}$/.test(d) && d >= today && d <= addDays(today, 366);
-  const date = hasDay && inRange(a.date) ? a.date! : null;
-  const repeat = [...new Set((hasDay ? a.repeat_days ?? [] : []).map((d) => DOW.indexOf(d)).filter((d) => d >= 0))].sort();
+  const date = dayToDate(a.day ?? null, note, now);
+  const on = date ?? viewDate;
+  let start = timeOf(fromNote(a.start, note), now, on);
+  let end = timeOf(fromNote(a.end, note), now, on);
+  const after = timeOf(fromNote(a.after, note), now, on);
+  const before = timeOf(fromNote(a.before, note), now, on);
+  let duration = durationOf(fromNote(a.duration, note), now, on);
+  let repeat = repeatDays(a.repeat, note);
+  // A single day without "every"/"weekly" is just that day, not a repeat.
+  if (repeat.length === 1 && !/\b(every|each|weekly)\b|days\b/i.test(note)) repeat = [];
 
-  // The rules are exact when they do find a time; trust them over the model.
-  const ruleAdd = rules.kind === 'add' ? rules : 'fallback' in rules ? rules.fallback : null;
-  if (ruleAdd && ruleAdd.start !== null && (start === null || a.action === 'add')) {
+  // The rules are exact when they find a time; trust them over the model.
+  if (ruleAdd && ruleAdd.start !== null) {
     start = ruleAdd.start;
-    if (ruleAdd.duration !== null) end = start + ruleAdd.duration;
+    if (ruleAdd.duration !== null) duration = ruleAdd.duration;
   }
-  let duration: number | null = null;
-  if (start !== null && end !== null) {
+  if (start !== null && end !== null && duration === null) {
     while (end <= start) end += 12 * 60;
     duration = end - start;
   }
-  if (typeof a.duration_min === 'number' && a.duration_min > 0 && a.duration_min <= 16 * 60) duration = a.duration_min;
 
   switch (a.action) {
     case 'add': {
@@ -158,7 +229,7 @@ export function answerToCommand(raw: unknown, note: string, now: Date, viewDate:
         repeat: repeat.length ? repeat : null,
         alsoOn: [],
         alsoAt: ruleAdd?.alsoAt ?? [],
-        interval: repeat.length && a.every_other_week ? 2 : 1,
+        interval: repeat.length && a.every_other_week && /other|second|bi-?weekly/i.test(note) ? 2 : 1,
       };
       return add;
     }
@@ -169,7 +240,7 @@ export function answerToCommand(raw: unknown, note: string, now: Date, viewDate:
         query: title,
         date,
         start,
-        duration,
+        duration: null,
         earliest: start === null ? after : null,
         latest: start === null ? before : null,
         shift: rules.kind === 'move' ? rules.shift : null,
@@ -186,7 +257,8 @@ export function answerToCommand(raw: unknown, note: string, now: Date, viewDate:
     case 'set_bedtime': {
       if (rules.kind === 'setting') return rules;
       if (start === null) return null;
-      return { kind: 'setting', patch: a.action === 'set_wake' ? { dayStart: start } : { dayEnd: start === 0 ? 1440 : start } };
+      if (a.action === 'set_wake') return { kind: 'setting', patch: { dayStart: start >= 12 * 60 ? start - 12 * 60 : start } };
+      return { kind: 'setting', patch: { dayEnd: start < 6 * 60 ? 1440 : start } };
     }
     default:
       return null;
@@ -195,7 +267,7 @@ export function answerToCommand(raw: unknown, note: string, now: Date, viewDate:
 
 // Leftovers in a title that mean the rules missed a time, day or repeat.
 const LEFTOVER =
-  /\d|\b(am|pm|noon|midnight|tonight|tomorrow|tmrw|today|every|daily|weekly|weekdays?|weekends?|after|before|between|until|o'?clock|half past|quarter (past|to)|ish|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun|(mon|tues|wednes|thurs|fri|satur|sun)days?)\b/i;
+  /\d|\b(am|pm|noon|midnight|tonight|tomorrow|tmrw|today|every|daily|weekly|weekdays?|weekends?|after|before|between|until|o'?\s?clock|half past|quarter (past|to)|ish|first thing|morning|afternoon|evening|night|weekend|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun|(mon|tues|wednes|thurs|fri|satur|sun)days?)\b/i;
 
 /**
  * True when the rule-based parser clearly didn't understand everything, e.g.

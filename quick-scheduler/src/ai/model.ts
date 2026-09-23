@@ -5,7 +5,7 @@ import * as FS from 'expo-file-system/legacy';
 import * as Network from 'expo-network';
 import { initLlama, LlamaContext } from 'llama.rn';
 import { Item } from '../types';
-import { ANSWER_SCHEMA, buildUserMessage, parseAnswer, SYSTEM_PROMPT } from './prompt';
+import { ANSWER_SCHEMA, buildMessages, parseAnswer } from './prompt';
 
 export const MODEL = {
   name: 'Llama 3.2 1B Instruct (Q4_K_M)',
@@ -114,19 +114,12 @@ export async function loadModel(automatic = false): Promise<void> {
   setStatus({ state: 'loading' });
   await AsyncStorage.setItem(LOADING_FLAG, '1').catch(() => {});
   try {
-    context = await initLlama({ model: modelPath, n_ctx: 2048, n_gpu_layers: 0, use_mlock: false });
+    context = await initLlama({ model: modelPath, n_ctx: 4096, n_gpu_layers: 0, use_mlock: false });
     await AsyncStorage.removeItem(LOADING_FLAG).catch(() => {});
     setStatus({ state: 'ready' });
-    // Warm up: process the fixed system prompt once so later notes are faster.
-    context
-      .completion({
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: 'Note: hi' },
-        ],
-        n_predict: 1,
-      })
-      .catch(() => {});
+    // Warm up: process the fixed instructions and examples once, so they're
+    // cached and later notes only need the last few tokens processed.
+    context.completion({ messages: buildMessages('hi', [], new Date()), n_predict: 1 }).catch(() => {});
   } catch (e) {
     context = null;
     await AsyncStorage.removeItem(LOADING_FLAG).catch(() => {});
@@ -142,14 +135,11 @@ export async function deleteModel(): Promise<void> {
 }
 
 /** Asks the model to read a note. Returns the raw parsed JSON, or null. */
-export async function understand(note: string, items: Item[], now: Date, viewDate: string, timeoutMs = 20000): Promise<unknown> {
+export async function understand(note: string, items: Item[], now: Date, timeoutMs = 20000): Promise<unknown> {
   if (!context) return null;
   const ctx = context;
   const run = ctx.completion({
-    messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: buildUserMessage(note, items, now, viewDate) },
-    ],
+    messages: buildMessages(note, items, now),
     response_format: { type: 'json_schema', json_schema: { strict: true, schema: ANSWER_SCHEMA } },
     temperature: 0,
     n_predict: 200,

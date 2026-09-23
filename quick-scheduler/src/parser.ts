@@ -273,6 +273,9 @@ function extractWhen(input: string, mode: 'add' | 'move'): { rest: string; when:
     when.days = { dows: [1, 2, 3, 4, 5], next: false };
     when.recurring = true;
   });
+  take(/\b(?:on\s+the|this|over\s+the)\s+weekend\b/i, () => {
+    when.days = { dows: [6], next: false }; // "on the weekend" = this Saturday
+  });
   take(/\b(?:(?:every|each)\s+weekend|(?:on\s+)?weekends)\b/i, () => {
     when.days = { dows: [0, 6], next: false };
     when.recurring = true;
@@ -567,11 +570,33 @@ const STOP_PREFIX = /^(?:please\s+)?(?:stop(?:\s+repeating)?|end|no\s+more|quit)
 const SERIES_WORDS = /\b(?:every\s*(?:week|day)|each\s+week|all(?:\s+of\s+them)?|recurring|repeating|repeats?|series|weekly|for\s+good|forever|permanently)\b/gi;
 const MOVE_PREFIX = /^(?:please\s+)?(?:move|reschedule|push|shift|bump|postpone|delay)\s+(.+)$/i;
 
+const NUMBER_WORDS: Record<string, number> = {
+  one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
+};
+const NW = String.raw`(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})`;
+const MINUTE_WORDS: Record<string, string> = { thirty: '30', fifteen: '15', 'forty five': '45', 'forty-five': '45', 'o five': '05' };
+const numOf = (w: string) => NUMBER_WORDS[w.toLowerCase()] ?? +w;
+
+/** Rewrites times written in words ("half past five", "at seven thirty", "5ish") as digits. */
+export function normalizeTimeWords(text: string): string {
+  return text
+    .replace(new RegExp(String.raw`\bhalf past ${NW}\b`, 'gi'), (_, n) => `${numOf(n)}:30`)
+    .replace(new RegExp(String.raw`\bquarter past ${NW}\b`, 'gi'), (_, n) => `${numOf(n)}:15`)
+    .replace(new RegExp(String.raw`\bquarter (?:to|til) ${NW}\b`, 'gi'), (_, n) => `${((numOf(n) + 10) % 12) + 1}:45`)
+    .replace(new RegExp(String.raw`\b${NW}[ -](thirty|fifteen|forty[ -]five|o five)\b`, 'gi'), (_, n, m) => `${numOf(n)}:${MINUTE_WORDS[m.toLowerCase().replace('-', ' ')]}`)
+    .replace(new RegExp(String.raw`\b${NW}\s*(o'?\s?clock|a\.?m\.?|p\.?m\.?)`, 'gi'), (_, n, suffix) => `${numOf(n)} ${suffix.replace(/\s/, '')}`)
+    .replace(
+      new RegExp(String.raw`\b(at|by|after|before|around|from|until|till) ${NW}\b(?=\s*(?:$|[,.!?]|-|to\b|and\b|until\b|tonight|tomorrow|today|in\b|on\b|every|for\b|this\b|next\b))`, 'gi'),
+      (_, prep, n) => `${prep} ${numOf(n)}`,
+    )
+    .replace(/\b(\d{1,2}(?::\d{2})?)\s*-?ish\b/gi, '$1');
+}
+
 /**
  * @param defaultDate the day the user is looking at; used when no day is mentioned.
  */
 export function parseCommand(input: string, now: Date, defaultDate: string): Command {
-  const text = input.trim().replace(/\s+/g, ' ');
+  const text = normalizeTimeWords(input.trim().replace(/\s+/g, ' '));
   if (!text) return { kind: 'none' };
   const fallback = () => parseAdd(text, now, defaultDate);
 

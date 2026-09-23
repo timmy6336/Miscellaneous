@@ -242,3 +242,15 @@ test('more natural phrasings', () => {
   assert.deepEqual([read.title, read.duration, read.earliest], ['Read', 30, h(20)]);
   assert.equal(add('laundry sometime tomorrow afternoon').title, 'Laundry');
 });
+
+test('times written in words', () => {
+  assert.equal(add('gym at half past five').start, h(17, 30));
+  assert.equal(add('call at seven thirty').start, h(19, 30));
+  assert.equal(add('lunch at quarter to one').start, h(12, 45));
+  assert.equal(add('nap at two o clock').start, h(14));
+  assert.equal(add('alarm at six am').start, h(6));
+  const swim = add('swim at 5ish on the weekend');
+  assert.deepEqual([swim.title, swim.start, swim.date], ['Swim', h(17), '2026-09-26']);
+  assert.equal(add('go to one direction concert').title, 'Go to one direction concert');
+  assert.equal(add('buy five apples').title, 'Buy five apples');
+});

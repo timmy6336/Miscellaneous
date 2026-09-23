@@ -1,13 +1,15 @@
-// Scores note understanding on tests/ai-cases.ts: the on-device model (run here
-// with node-llama-cpp, the same llama.cpp engine the app uses) vs. the rules.
+/// <reference types="node" />
+// Scores note understanding on tests/ai-cases.ts with the on-device model (run
+// here with node-llama-cpp, the same llama.cpp engine the app uses), the rules
+// alone, and the hybrid the app uses (rules first, model only when they miss).
 //
-//   npm i --no-save node-llama-cpp && npx tsx scripts/ai-eval.mts path/to/model.gguf
+//   npm i --no-save node-llama-cpp && npx tsx scripts/ai-eval.mts path/to/model.gguf [name]
 //
 // Writes a Markdown report to $GITHUB_STEP_SUMMARY when running in CI.
 
 import { appendFileSync } from 'node:fs';
-import { getLlama, LlamaChatSession } from 'node-llama-cpp';
-import { ANSWER_SCHEMA, answerToCommand, buildUserMessage, parseAnswer, SYSTEM_PROMPT } from '../src/ai/prompt';
+import { ChatHistoryItem, getLlama, LlamaChatSession } from 'node-llama-cpp';
+import { ANSWER_SCHEMA, answerToCommand, buildMessages, parseAnswer, rulesNeedHelp } from '../src/ai/prompt';
 import { Command, parseCommand } from '../src/parser';
 import { CASES, EVAL_ITEMS, EVAL_NOW, EVAL_TODAY, Expect } from '../tests/ai-cases';
 
@@ -40,54 +42,71 @@ function check(cmd: Command | null, ex: Expect): string[] {
   return bad;
 }
 
+const pct = (n: number, total: number) => `${n}/${total} (${Math.round((n / total) * 100)}%)`;
+
 async function main() {
-  const modelPath = process.argv[2];
-  if (!modelPath) throw new Error('usage: ai-eval.ts <model.gguf>');
+  const [modelPath, name = modelPath?.split('/').pop()] = process.argv.slice(2);
+  if (!modelPath) throw new Error('usage: ai-eval.mts <model.gguf> [name]');
   const llama = await getLlama();
   const model = await llama.loadModel({ modelPath });
-  const context = await model.createContext({ contextSize: 2048 });
+  const context = await model.createContext({ contextSize: 4096 });
   const grammar = await llama.createGrammarForJsonSchema(ANSWER_SCHEMA as any);
+
+  // Same messages as the app. Everything but the last turn is identical for
+  // every note, so one session with that history is reused (and cached).
+  const template = buildMessages('x', EVAL_ITEMS, EVAL_NOW);
+  const history: ChatHistoryItem[] = template.slice(0, -1).map((m) =>
+    m.role === 'system' ? { type: 'system', text: m.content } : m.role === 'user' ? { type: 'user', text: m.content } : { type: 'model', response: [m.content] },
+  );
+  const session = new LlamaChatSession({ contextSequence: context.getSequence() });
 
   const rows: string[] = [];
   let aiOk = 0;
   let rulesOk = 0;
-  let totalMs = 0;
+  let hybridOk = 0;
+  let asked = 0;
+  const times: number[] = [];
   for (const { note, expect } of CASES) {
-    const rulesBad = check(parseCommand(note, EVAL_NOW, EVAL_TODAY), expect);
+    const rulesCmd = parseCommand(note, EVAL_NOW, EVAL_TODAY);
+    const rulesBad = check(rulesCmd, expect);
     if (!rulesBad.length) rulesOk++;
 
-    const sequence = context.getSequence();
-    const session = new LlamaChatSession({ contextSequence: sequence, systemPrompt: SYSTEM_PROMPT });
+    session.setChatHistory(history);
     const t0 = Date.now();
-    const text = await session.prompt(buildUserMessage(note, EVAL_ITEMS, EVAL_NOW, EVAL_TODAY), {
+    const text = await session.prompt(buildMessages(note, EVAL_ITEMS, EVAL_NOW).at(-1)!.content, {
       grammar,
       temperature: 0,
-      maxTokens: 200,
+      maxTokens: 160,
     });
     const ms = Date.now() - t0;
-    totalMs += ms;
-    session.dispose();
-    sequence.dispose();
+    times.push(ms);
 
-    const raw = parseAnswer(text);
-    const aiBad = check(answerToCommand(raw, note, EVAL_NOW, EVAL_TODAY), expect);
+    const aiCmd = answerToCommand(parseAnswer(text), note, EVAL_NOW, EVAL_TODAY);
+    const aiBad = check(aiCmd, expect);
     if (!aiBad.length) aiOk++;
+    const useAi = rulesNeedHelp(rulesCmd);
+    if (useAi) asked++;
+    const hybridBad = useAi && aiCmd ? aiBad : rulesBad;
+    if (!hybridBad.length) hybridOk++;
+
     const mark = (bad: string[]) => (bad.length ? `✗ ${bad.join('; ')}` : '✓');
-    rows.push(`| ${note} | ${mark(aiBad)} | ${mark(rulesBad)} | ${ms} |`);
+    rows.push(`| ${note} | ${mark(aiBad)} | ${mark(rulesBad)} | ${useAi ? 'AI' : 'rules'} ${mark(hybridBad)} | ${ms} |`);
     console.log(`${aiBad.length ? 'AI ✗' : 'AI ✓'} ${rulesBad.length ? 'rules ✗' : 'rules ✓'} ${ms}ms  ${note}`);
     if (aiBad.length) console.log(`     model said: ${text}\n     ${aiBad.join('; ')}`);
   }
 
   const n = CASES.length;
+  const sorted = [...times].sort((a, b) => a - b);
   const summary = [
-    `## Note understanding: ${modelPath.split('/').pop()}`,
+    `## Note understanding: ${name}`,
     '',
-    `- **AI (model + guards): ${aiOk}/${n} (${Math.round((aiOk / n) * 100)}%)**`,
-    `- Rules only: ${rulesOk}/${n} (${Math.round((rulesOk / n) * 100)}%)`,
-    `- Average time per note on this CI machine: ${Math.round(totalMs / n)} ms (phones will differ)`,
+    `- **Hybrid (what the app does: rules, model only when they miss — asked ${asked}×): ${pct(hybridOk, n)}**`,
+    `- Model on every note: ${pct(aiOk, n)}`,
+    `- Rules only: ${pct(rulesOk, n)}`,
+    `- Time per note on this CI CPU, examples cached: median ${sorted[Math.floor(n / 2)]} ms, first ${times[0]} ms (phones differ)`,
     '',
-    '| Note | AI | Rules | ms |',
-    '| --- | --- | --- | --- |',
+    '| Note | Model | Rules | Hybrid | ms |',
+    '| --- | --- | --- | --- | --- |',
     ...rows,
     '',
   ].join('\n');

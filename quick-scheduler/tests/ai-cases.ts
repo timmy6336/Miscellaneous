@@ -51,6 +51,9 @@ export const CASES: { note: string; expect: Expect }[] = [
   { note: 'I need to call the bank', expect: { kind: 'add', title: 'Call the bank', start: null } },
   { note: 'remind me to water the plants', expect: { kind: 'add', title: 'Water the plants', start: null } },
   { note: 'pick up dry cleaning sometime today', expect: { kind: 'add', title: 'Pick up dry cleaning', date: EVAL_TODAY, start: null } },
+  // The rules miss these, so the app asks the model.
+  { note: 'call the plumber first thing tomorrow', expect: { kind: 'add', title: 'Call the plumber', date: '2026-09-24' } },
+  { note: 'coffee w/ jess thurs arvo', expect: { kind: 'add', title: 'Coffee with Jess', date: '2026-09-24' } },
   // Exact times
   { note: 'call mom at 5', expect: { kind: 'add', title: 'Call mom', start: h(17) } },
   { note: 'workout at 530pm', expect: { kind: 'add', title: 'Workout', start: h(17, 30) } },
