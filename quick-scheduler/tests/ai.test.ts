@@ -1,7 +1,8 @@
 /// <reference types="node" />
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { answerToCommand, buildUserMessage, parseAnswer } from '../src/ai/prompt';
+import { answerToCommand, buildUserMessage, parseAnswer, rulesNeedHelp } from '../src/ai/prompt';
+import { parseCommand } from '../src/parser';
 import { EVAL_ITEMS, EVAL_NOW, EVAL_TODAY } from './ai-cases';
 
 const base = {
@@ -48,4 +49,13 @@ test('the prompt includes the calendar and planned items', () => {
   assert.match(msg, /Friday 2026-09-25/);
   assert.match(msg, /6:00 PM–7:00 PM: Gym/);
   assert.match(msg, /Note: move gym to 7pm$/);
+});
+
+test('the model is only asked when the rules left something unread', () => {
+  const p = (s: string) => parseCommand(s, EVAL_NOW, EVAL_TODAY);
+  assert.equal(rulesNeedHelp(p('groceries')), false);
+  assert.equal(rulesNeedHelp(p('I work out mon tue Thursday fri from 530pm to 630pm')), false);
+  assert.equal(rulesNeedHelp(p('gym at half past five')), true); // time in words
+  assert.equal(rulesNeedHelp(p('swim at 5ish on the weekend')), true);
+  assert.equal(rulesNeedHelp(p('yoga every 3rd day')), true);
 });

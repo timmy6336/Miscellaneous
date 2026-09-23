@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { ai, AiStatus } from './src/ai';
-import { answerToCommand } from './src/ai/prompt';
+import { answerToCommand, rulesNeedHelp } from './src/ai/prompt';
 import * as calendar from './src/calendar';
 import { ItemSheet, SettingsSheet } from './src/components/Sheets';
 import { Timeline } from './src/components/Timeline';
@@ -73,8 +73,6 @@ function Main() {
   const [showSettings, setShowSettings] = useState(false);
   const [aiStatus, setAiStatus] = useState<AiStatus>({ state: 'missing' });
   const [thinking, setThinking] = useState(false);
-  /** First launch off Wi-Fi: ask before the big download. */
-  const [askAiDownload, setAskAiDownload] = useState(false);
 
   // Refs mirror state for async work (calendar sync) that outlives a render.
   const itemsRef = useRef(items);
@@ -202,14 +200,7 @@ function Main() {
     const unsubscribe = model.subscribe(setAiStatus);
     (async () => {
       if (await model.isDownloaded()) {
-        if (settingsRef.current.aiEnabled) model.loadModel(true);
-      } else if (!settingsRef.current.aiAsked) {
-        if (await model.onWifi()) {
-          updateSettings({ aiAsked: true });
-          model.downloadModel();
-        } else {
-          setAskAiDownload(true);
-        }
+        if (settingsRef.current.useAi) model.loadModel(true);
       }
     })();
     return unsubscribe;
@@ -289,7 +280,7 @@ function Main() {
     [setItems, setRoutines, showToast, syncToCalendar],
   );
 
-  const aiReady = settings.aiEnabled && aiStatus.state === 'ready';
+  const aiReady = settings.useAi && aiStatus.state === 'ready';
 
   const submit = useCallback(async () => {
     const input = text.trim();
@@ -297,8 +288,8 @@ function Main() {
     let cmd = parseCommand(input, new Date(), viewDate);
     let usedAi = false;
     const model = ai();
-    if (aiReady && model) {
-      // Let the on-device model read the note; fall back to the rules if it can't.
+    if (aiReady && model && rulesNeedHelp(cmd)) {
+      // The rules missed something: let the on-device model have a go.
       setThinking(true);
       try {
         const raw = await model.understand(input, itemsRef.current, new Date(), viewDate);
@@ -353,9 +344,9 @@ function Main() {
 
   const preview = useMemo(() => {
     if (!text.trim()) return null;
-    // With the model on, the result is shown after sending (with Undo).
-    if (aiReady) return thinking ? 'Reading your note…' : '✨ On-device AI will read this when you send it';
+    if (thinking) return 'Reading your note…';
     const cmd = parseCommand(text, now, viewDate);
+    if (aiReady && rulesNeedHelp(cmd)) return '✨ On-device AI will read this when you send it';
     if (cmd.kind === 'none') return null;
     return applyCommand(cmd, items, { now, settings, busy, viewDate }, routines).preview ?? null;
   }, [text, now, viewDate, items, settings, busy, routines, aiReady, thinking]);
@@ -468,19 +459,6 @@ function Main() {
             </View>
           </View>
         )}
-        {askAiDownload && !settings.aiAsked && aiStatus.state === 'missing' && (
-          <Banner
-            t={t}
-            icon="sparkles-outline"
-            text={`Get smarter understanding with on-device AI (one-time ${(ai()!.MODEL.bytes / 1e9).toFixed(1)} GB download — you're not on Wi-Fi).`}
-            action="Download"
-            onPress={() => {
-              updateSettings({ aiAsked: true });
-              ai()?.downloadModel();
-            }}
-            onDismiss={() => updateSettings({ aiAsked: true })}
-          />
-        )}
         {oldOnes.length > 0 && (
           <Banner
             t={t}
@@ -547,15 +525,15 @@ function Main() {
           ai()
             ? {
                 status: aiStatus,
-                enabled: settings.aiEnabled,
+                enabled: settings.useAi,
                 sizeGb: ai()!.MODEL.bytes / 1e9,
                 modelName: ai()!.MODEL.name,
                 onToggle: (on) => {
-                  updateSettings({ aiEnabled: on });
+                  updateSettings({ useAi: on });
                   if (on) ai()?.loadModel();
                 },
                 onDownload: () => {
-                  updateSettings({ aiAsked: true, aiEnabled: true });
+                  updateSettings({ useAi: true });
                   ai()?.downloadModel();
                 },
                 onCancel: () => ai()?.cancelDownload(),

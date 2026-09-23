@@ -193,6 +193,20 @@ export function answerToCommand(raw: unknown, note: string, now: Date, viewDate:
   }
 }
 
+// Leftovers in a title that mean the rules missed a time, day or repeat.
+const LEFTOVER =
+  /\d|\b(am|pm|noon|midnight|tonight|tomorrow|tmrw|today|every|daily|weekly|weekdays?|weekends?|after|before|between|until|o'?clock|half past|quarter (past|to)|ish|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun|(mon|tues|wednes|thurs|fri|satur|sun)days?)\b/i;
+
+/**
+ * True when the rule-based parser clearly didn't understand everything, e.g.
+ * a time was left in the title. Only then is the model asked.
+ */
+export function rulesNeedHelp(cmd: Command): boolean {
+  if (cmd.kind === 'none') return true;
+  if (cmd.kind === 'add') return LEFTOVER.test(cmd.title);
+  return false;
+}
+
 /** Pulls the first JSON object out of the model's text. */
 export function parseAnswer(text: string): unknown {
   const start = text.indexOf('{');

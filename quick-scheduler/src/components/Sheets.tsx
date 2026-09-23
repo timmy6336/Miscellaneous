@@ -211,12 +211,13 @@ export function SettingsSheet({
 
         {ai && (
           <>
-            <Text style={[styles.label, { color: t.muted }]}>ON-DEVICE AI</Text>
+            <Text style={[styles.label, { color: t.muted }]}>ON-DEVICE AI (EXPERIMENTAL)</Text>
             {ai.status.state === 'missing' && (
               <>
                 <Text style={[styles.hint, { color: t.muted }]}>
-                  Understands more ways of saying things. Runs on your phone; nothing is sent anywhere. One-time download of about{' '}
-                  {ai.sizeGb.toFixed(1)} GB (Wi-Fi recommended).
+                  Lets a small AI model read notes the built-in rules can't fully understand. Runs on your phone; nothing is sent
+                  anywhere. Still being tuned, so it may get things wrong. One-time download of about {ai.sizeGb.toFixed(1)} GB (Wi-Fi
+                  recommended).
                 </Text>
                 <Pressable onPress={ai.onDownload} style={[styles.button, { backgroundColor: t.accent }]} accessibilityRole="button">
                   <Text style={styles.buttonText}>Download on-device AI</Text>
@@ -235,7 +236,7 @@ export function SettingsSheet({
               <>
                 <View style={styles.stepper}>
                   <Text style={{ color: t.text, flex: 1 }}>
-                    Use AI to understand what I type{ai.status.state === 'loading' ? ' (loading…)' : ''}
+                    Use AI for notes the rules can't read{ai.status.state === 'loading' ? ' (loading…)' : ''}
                   </Text>
                   <Switch value={ai.enabled} onValueChange={ai.onToggle} trackColor={{ true: t.accent }} />
                 </View>
