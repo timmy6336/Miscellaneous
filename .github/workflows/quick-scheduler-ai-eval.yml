@@ -1,0 +1,52 @@
+# Scores how well the on-device model understands notes (tests/ai-cases.ts),
+# running the same prompt and llama.cpp engine the app uses, on CPU.
+name: Quick Scheduler AI eval
+
+on:
+  push:
+    paths:
+      - 'quick-scheduler/src/ai/**'
+      - 'quick-scheduler/src/parser.ts'
+      - 'quick-scheduler/tests/ai-cases.ts'
+      - 'quick-scheduler/scripts/ai-eval.ts'
+      - '.github/workflows/quick-scheduler-ai-eval.yml'
+  workflow_dispatch:
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: llama-3.2-1b
+            url: https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf
+    defaults:
+      run:
+        working-directory: quick-scheduler
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: quick-scheduler/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm i --no-save node-llama-cpp@3
+
+      - name: Cache model
+        uses: actions/cache@v4
+        with:
+          path: quick-scheduler/model.gguf
+          key: model-${{ matrix.url }}
+
+      - name: Download model
+        run: test -f model.gguf || curl -fL --retry 3 -o model.gguf "${{ matrix.url }}"
+
+      - name: Evaluate
+        run: npx tsx scripts/ai-eval.ts model.gguf

@@ -30,6 +30,12 @@
         {
           "calendarPermission": "Quick Scheduler adds your plans to your calendar so you get reminders, and reads it to find free time."
         }
+      ],
+      [
+        "llama.rn",
+        {
+          "enableOpenCLAndHexagon": false
+        }
       ]
     ]
   }
