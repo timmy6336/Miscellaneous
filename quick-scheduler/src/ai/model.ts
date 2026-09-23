@@ -1,5 +1,6 @@
 // Downloading, loading and running the on-device model (llama.cpp via llama.rn).
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FS from 'expo-file-system/legacy';
 import * as Network from 'expo-network';
 import { initLlama, LlamaContext } from 'llama.rn';
@@ -17,6 +18,8 @@ export const MODEL = {
 const dir = `${FS.documentDirectory}models/`;
 const modelPath = dir + MODEL.file;
 const partialPath = modelPath + '.part';
+/** Set while loading; if it's still set on the next launch, loading crashed the app. */
+const LOADING_FLAG = 'quick-scheduler/ai-loading';
 
 export type AiStatus =
   | { state: 'missing' }
@@ -62,6 +65,7 @@ export async function onWifi(): Promise<boolean> {
 /** Downloads the model to a temporary file, moves it into place, then loads it. */
 export async function downloadModel(): Promise<void> {
   if (status.state === 'downloading' || status.state === 'loading' || status.state === 'ready') return;
+  if (await isDownloaded()) return loadModel();
   try {
     const free = await FS.getFreeDiskStorageAsync();
     if (free < MODEL.bytes + 300 * 1024 * 1024) {
@@ -93,15 +97,25 @@ export async function cancelDownload(): Promise<void> {
   setStatus({ state: 'missing' });
 }
 
-export async function loadModel(): Promise<void> {
+/**
+ * Loads the downloaded model. With `automatic`, it won't try again if the last
+ * attempt crashed the app (e.g. the phone ran out of memory).
+ */
+export async function loadModel(automatic = false): Promise<void> {
   if (context || status.state === 'loading') return;
   if (!(await isDownloaded())) {
     setStatus({ state: 'missing' });
     return;
   }
+  if (automatic && (await AsyncStorage.getItem(LOADING_FLAG))) {
+    setStatus({ state: 'error', message: 'The model closed the app last time it loaded (the phone may be low on memory).' });
+    return;
+  }
   setStatus({ state: 'loading' });
+  await AsyncStorage.setItem(LOADING_FLAG, '1').catch(() => {});
   try {
     context = await initLlama({ model: modelPath, n_ctx: 2048, n_gpu_layers: 0, use_mlock: false });
+    await AsyncStorage.removeItem(LOADING_FLAG).catch(() => {});
     setStatus({ state: 'ready' });
     // Warm up: process the fixed system prompt once so later notes are faster.
     context
@@ -115,6 +129,7 @@ export async function loadModel(): Promise<void> {
       .catch(() => {});
   } catch (e) {
     context = null;
+    await AsyncStorage.removeItem(LOADING_FLAG).catch(() => {});
     setStatus({ state: 'error', message: `Couldn't load the model: ${e instanceof Error ? e.message : String(e)}` });
   }
 }

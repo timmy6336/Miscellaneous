@@ -1,7 +1,7 @@
 // Everything the on-device model needs, as pure code: the prompt, the JSON
 // shape it must answer in, and turning that answer into a normal Command.
 // The model only *understands* the note; placing things in free time is still
-// done by the scheduler. Shared by the app and scripts/ai-eval.ts.
+// done by the scheduler. Shared by the app and scripts/ai-eval.mts.
 
 import { addDays, dateKey, fmtTime, fromKey, minutesOf } from '../dates';
 import { AddCommand, Command, parseCommand } from '../parser';

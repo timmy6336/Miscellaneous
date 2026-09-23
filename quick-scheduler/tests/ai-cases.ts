@@ -1,4 +1,4 @@
-// Evaluation set for note understanding. Used by scripts/ai-eval.ts to score
+// Evaluation set for note understanding. Used by scripts/ai-eval.mts to score
 // the on-device model (and the rule-based parser, as a baseline).
 // "Now" is Wednesday 2026-09-23, 1:10 PM.
 

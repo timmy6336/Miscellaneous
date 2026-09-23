@@ -12,6 +12,18 @@ Open the app, type what you want to do, and it goes on your schedule.
 
 Everything is stored on the phone. There's no account and no server.
 
+## On-device AI
+
+On first launch (on Wi-Fi) the app downloads a small language model, **Llama 3.2 1B Instruct** (about 0.8 GB, Q4_K_M), from Hugging Face. Off Wi-Fi it asks first. After that it runs fully offline on the phone via [llama.rn](https://github.com/mybigday/llama.rn) (llama.cpp).
+
+- The model only *reads* the note: it answers with a small JSON object (action, title, day, times, window, repeat days) whose shape is enforced during decoding. The regular scheduler then places it, so free-slot logic, wake/bedtime, calendar sync and Undo are unchanged.
+- It sees today's date, the next week's calendar and what's already planned, so “push the dentist to friday” or “I can't make it to the gym today” work.
+- Guards against a small model making things up: a time or day it outputs is ignored unless the note mentions one, and an exact time found by the built-in rules always wins.
+- If the model isn't downloaded, is still loading, is switched off (Settings → On-device AI), or fails, the built-in rules are used.
+- If loading ever crashes the app (low memory), it won't auto-load again; Settings offers a retry.
+
+**Accuracy** is measured in CI by the *Quick Scheduler AI eval* workflow: `tests/ai-cases.ts` (about 40 notes) is run through the same prompt and llama.cpp engine with `scripts/ai-eval.mts`, and the job summary shows AI vs. rules-only scores.
+
 ## Install on Android
 
 Every push that touches `quick-scheduler/` runs the **Quick Scheduler APK** GitHub Action, which builds a standalone APK and publishes it as a GitHub Release.

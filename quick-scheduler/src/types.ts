@@ -49,6 +49,10 @@ export type Settings = {
   calendarId: string | null;
   /** Minutes before the start to alert. 0 = at start, -1 = no alert. */
   reminderMinutes: number;
+  /** Use the on-device model to understand notes (when it's downloaded). */
+  aiEnabled: boolean;
+  /** The first-launch model download was started or declined. */
+  aiAsked: boolean;
 };
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -58,6 +62,8 @@ export const DEFAULT_SETTINGS: Settings = {
   calendarSync: true,
   calendarId: null,
   reminderMinutes: 10,
+  aiEnabled: true,
+  aiAsked: false,
 };
 
 export type Interval = { start: number; end: number };

@@ -8,7 +8,7 @@ on:
       - 'quick-scheduler/src/ai/**'
       - 'quick-scheduler/src/parser.ts'
       - 'quick-scheduler/tests/ai-cases.ts'
-      - 'quick-scheduler/scripts/ai-eval.ts'
+      - 'quick-scheduler/scripts/ai-eval.mts'
       - '.github/workflows/quick-scheduler-ai-eval.yml'
   workflow_dispatch:
 
@@ -49,4 +49,4 @@ jobs:
         run: test -f model.gguf || curl -fL --retry 3 -o model.gguf "${{ matrix.url }}"
 
       - name: Evaluate
-        run: npx tsx scripts/ai-eval.ts model.gguf
+        run: npx tsx scripts/ai-eval.mts model.gguf

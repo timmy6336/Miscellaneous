@@ -1,7 +1,7 @@
 // Scores note understanding on tests/ai-cases.ts: the on-device model (run here
 // with node-llama-cpp, the same llama.cpp engine the app uses) vs. the rules.
 //
-//   npm i --no-save node-llama-cpp && npx tsx scripts/ai-eval.ts path/to/model.gguf
+//   npm i --no-save node-llama-cpp && npx tsx scripts/ai-eval.mts path/to/model.gguf
 //
 // Writes a Markdown report to $GITHUB_STEP_SUMMARY when running in CI.
 

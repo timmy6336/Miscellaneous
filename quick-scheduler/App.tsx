@@ -13,6 +13,8 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { ai, AiStatus } from './src/ai';
+import { answerToCommand } from './src/ai/prompt';
 import * as calendar from './src/calendar';
 import { ItemSheet, SettingsSheet } from './src/components/Sheets';
 import { Timeline } from './src/components/Timeline';
@@ -69,6 +71,10 @@ function Main() {
   const [toast, setToast] = useState<Toast | null>(null);
   const [selected, setSelected] = useState<Item | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [aiStatus, setAiStatus] = useState<AiStatus>({ state: 'missing' });
+  const [thinking, setThinking] = useState(false);
+  /** First launch off Wi-Fi: ask before the big download. */
+  const [askAiDownload, setAskAiDownload] = useState(false);
 
   // Refs mirror state for async work (calendar sync) that outlives a render.
   const itemsRef = useRef(items);
@@ -188,6 +194,27 @@ function Main() {
     })();
   }, [connectCalendar]);
 
+  // On-device model: follow its status; load it if downloaded, otherwise start
+  // the one-time download on first launch (automatically only on Wi-Fi).
+  useEffect(() => {
+    const model = ai();
+    if (!ready || !model) return;
+    const unsubscribe = model.subscribe(setAiStatus);
+    (async () => {
+      if (await model.isDownloaded()) {
+        if (settingsRef.current.aiEnabled) model.loadModel(true);
+      } else if (!settingsRef.current.aiAsked) {
+        if (await model.onWifi()) {
+          updateSettings({ aiAsked: true });
+          model.downloadModel();
+        } else {
+          setAskAiDownload(true);
+        }
+      }
+    })();
+    return unsubscribe;
+  }, [ready, updateSettings]);
+
   // Keep the clock fresh: every 30s and whenever the app comes back to the foreground.
   useEffect(() => {
     const tick = setInterval(() => setNow(new Date()), 30_000);
@@ -262,10 +289,30 @@ function Main() {
     [setItems, setRoutines, showToast, syncToCalendar],
   );
 
+  const aiReady = settings.aiEnabled && aiStatus.state === 'ready';
+
   const submit = useCallback(async () => {
     const input = text.trim();
-    if (!input) return;
-    const cmd = parseCommand(input, new Date(), viewDate);
+    if (!input || thinking) return;
+    let cmd = parseCommand(input, new Date(), viewDate);
+    let usedAi = false;
+    const model = ai();
+    if (aiReady && model) {
+      // Let the on-device model read the note; fall back to the rules if it can't.
+      setThinking(true);
+      try {
+        const raw = await model.understand(input, itemsRef.current, new Date(), viewDate);
+        const fromAi = answerToCommand(raw, input, new Date(), viewDate);
+        if (fromAi) {
+          cmd = fromAi;
+          usedAi = true;
+        }
+      } catch (e) {
+        console.warn('On-device AI failed', e);
+      } finally {
+        setThinking(false);
+      }
+    }
     if (cmd.kind === 'none') {
       showToast({ message: 'Add a few words about what you want to do.', tone: 'error', undo: null });
       return;
@@ -278,9 +325,11 @@ function Main() {
       if (loaded) b = { ...b, ...loaded };
     }
     const before = snapshot();
-    commit(applyCommand(cmd, before.items, ctx(b), before.routines), before);
+    const result = applyCommand(cmd, before.items, ctx(b), before.routines);
+    if (usedAi && result.message) result.message = `✨ ${result.message}`;
+    commit(result, before);
     setText('');
-  }, [text, viewDate, busy, calStatus, refreshBusy, commit, ctx, showToast]);
+  }, [text, thinking, aiReady, viewDate, busy, calStatus, refreshBusy, commit, ctx, showToast]);
 
   const undo = useCallback(() => {
     if (!toast?.undo) return;
@@ -304,10 +353,12 @@ function Main() {
 
   const preview = useMemo(() => {
     if (!text.trim()) return null;
+    // With the model on, the result is shown after sending (with Undo).
+    if (aiReady) return thinking ? 'Reading your note…' : '✨ On-device AI will read this when you send it';
     const cmd = parseCommand(text, now, viewDate);
     if (cmd.kind === 'none') return null;
     return applyCommand(cmd, items, { now, settings, busy, viewDate }, routines).preview ?? null;
-  }, [text, now, viewDate, items, settings, busy, routines]);
+  }, [text, now, viewDate, items, settings, busy, routines, aiReady, thinking]);
 
   const dayItems = items.filter((i) => i.date === viewDate);
   const oldOnes = viewDate === today ? leftovers(items, ctx()) : [];
@@ -360,16 +411,17 @@ function Main() {
             returnKeyType="send"
             submitBehavior="submit"
             autoFocus
+            editable={!thinking}
             autoCapitalize="sentences"
             accessibilityLabel="What do you want to do?"
           />
           <Pressable
             onPress={submit}
-            disabled={!text.trim()}
+            disabled={!text.trim() || thinking}
             style={[styles.send, { backgroundColor: text.trim() ? t.accent : t.border }]}
             accessibilityLabel="Add"
           >
-            <Ionicons name="arrow-up" size={20} color="#fff" />
+            {thinking ? <ActivityIndicator color="#fff" /> : <Ionicons name="arrow-up" size={20} color="#fff" />}
           </Pressable>
         </View>
         {preview ? (
@@ -398,6 +450,35 @@ function Main() {
             text="Connect your calendar to get reminders and to plan around your events."
             action={calStatus === 'blocked' ? 'Open settings' : 'Connect'}
             onPress={connectCalendar}
+          />
+        )}
+        {aiStatus.state === 'downloading' && (
+          <View style={[styles.banner, { backgroundColor: t.accentSoft, flexDirection: 'column', alignItems: 'stretch' }]}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+              <Ionicons name="sparkles-outline" size={20} color={t.accent} />
+              <Text style={[styles.bannerText, { color: t.text }]}>
+                Downloading on-device AI… {Math.round(aiStatus.progress * 100)}%
+              </Text>
+              <Pressable onPress={() => ai()?.cancelDownload()} hitSlop={8} accessibilityRole="button">
+                <Text style={[styles.bannerAction, { color: t.accent }]}>Cancel</Text>
+              </Pressable>
+            </View>
+            <View style={[styles.progressTrack, { backgroundColor: t.card }]}>
+              <View style={[styles.progressFill, { backgroundColor: t.accent, width: `${Math.round(aiStatus.progress * 100)}%` }]} />
+            </View>
+          </View>
+        )}
+        {askAiDownload && !settings.aiAsked && aiStatus.state === 'missing' && (
+          <Banner
+            t={t}
+            icon="sparkles-outline"
+            text={`Get smarter understanding with on-device AI (one-time ${(ai()!.MODEL.bytes / 1e9).toFixed(1)} GB download — you're not on Wi-Fi).`}
+            action="Download"
+            onPress={() => {
+              updateSettings({ aiAsked: true });
+              ai()?.downloadModel();
+            }}
+            onDismiss={() => updateSettings({ aiAsked: true })}
           />
         )}
         {oldOnes.length > 0 && (
@@ -462,6 +543,26 @@ function Main() {
         onClose={() => setShowSettings(false)}
         onChange={updateSettings}
         onConnect={connectCalendar}
+        ai={
+          ai()
+            ? {
+                status: aiStatus,
+                enabled: settings.aiEnabled,
+                sizeGb: ai()!.MODEL.bytes / 1e9,
+                modelName: ai()!.MODEL.name,
+                onToggle: (on) => {
+                  updateSettings({ aiEnabled: on });
+                  if (on) ai()?.loadModel();
+                },
+                onDownload: () => {
+                  updateSettings({ aiAsked: true, aiEnabled: true });
+                  ai()?.downloadModel();
+                },
+                onCancel: () => ai()?.cancelDownload(),
+                onDelete: () => ai()?.deleteModel(),
+              }
+            : null
+        }
         onCreateOwnCalendar={async () => {
           try {
             const id = await calendar.createOwnCalendar();
@@ -482,12 +583,14 @@ function Banner({
   text,
   action,
   onPress,
+  onDismiss,
 }: {
   t: ReturnType<typeof useTheme>;
   icon: React.ComponentProps<typeof Ionicons>['name'];
   text: string;
   action: string;
   onPress: () => void;
+  onDismiss?: () => void;
 }) {
   return (
     <View style={[styles.banner, { backgroundColor: t.accentSoft }]}>
@@ -496,6 +599,11 @@ function Banner({
       <Pressable onPress={onPress} hitSlop={8} accessibilityRole="button">
         <Text style={[styles.bannerAction, { color: t.accent }]}>{action}</Text>
       </Pressable>
+      {onDismiss && (
+        <Pressable onPress={onDismiss} hitSlop={8} accessibilityLabel="Not now">
+          <Ionicons name="close" size={18} color={t.muted} />
+        </Pressable>
+      )}
     </View>
   );
 }
@@ -535,6 +643,8 @@ const styles = StyleSheet.create({
   banner: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12, borderRadius: 12, marginBottom: 12 },
   bannerText: { flex: 1, fontSize: 14 },
   bannerAction: { fontWeight: '700', fontSize: 14 },
+  progressTrack: { height: 6, borderRadius: 3, marginTop: 10, overflow: 'hidden' },
+  progressFill: { height: 6, borderRadius: 3 },
   empty: { alignItems: 'center', paddingTop: 48, paddingHorizontal: 24, gap: 8 },
   emptyTitle: { fontSize: 17, fontWeight: '600' },
   emptyText: { fontSize: 14, textAlign: 'center', lineHeight: 20 },

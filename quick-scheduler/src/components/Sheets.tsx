@@ -2,6 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { ComponentProps, ReactNode } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import type { AiStatus } from '../ai';
 import { CalendarChoice } from '../calendar';
 import { dayLabel, fmtRange, fmtTime } from '../dates';
 import { routineLabel, routineWhen } from '../scheduler';
@@ -173,6 +174,7 @@ export function SettingsSheet({
   calendars,
   routines,
   onStopRepeat,
+  ai,
   onClose,
   onChange,
   onConnect,
@@ -185,6 +187,17 @@ export function SettingsSheet({
   calendars: CalendarChoice[];
   routines: Routine[];
   onStopRepeat: (r: Routine) => void;
+  /** Null where the on-device model isn't available. */
+  ai: {
+    status: AiStatus;
+    enabled: boolean;
+    sizeGb: number;
+    modelName: string;
+    onToggle: (on: boolean) => void;
+    onDownload: () => void;
+    onCancel: () => void;
+    onDelete: () => void;
+  } | null;
   onClose: () => void;
   onChange: (patch: Partial<Settings>) => void;
   onConnect: () => void;
@@ -195,6 +208,56 @@ export function SettingsSheet({
     <Sheet t={t} visible={visible} onClose={onClose}>
       <ScrollView style={{ maxHeight: 560 }} contentContainerStyle={{ paddingBottom: 8 }}>
         <Text style={[styles.sheetTitle, { color: t.text }]}>Settings</Text>
+
+        {ai && (
+          <>
+            <Text style={[styles.label, { color: t.muted }]}>ON-DEVICE AI</Text>
+            {ai.status.state === 'missing' && (
+              <>
+                <Text style={[styles.hint, { color: t.muted }]}>
+                  Understands more ways of saying things. Runs on your phone; nothing is sent anywhere. One-time download of about{' '}
+                  {ai.sizeGb.toFixed(1)} GB (Wi-Fi recommended).
+                </Text>
+                <Pressable onPress={ai.onDownload} style={[styles.button, { backgroundColor: t.accent }]} accessibilityRole="button">
+                  <Text style={styles.buttonText}>Download on-device AI</Text>
+                </Pressable>
+              </>
+            )}
+            {ai.status.state === 'downloading' && (
+              <View style={styles.stepper}>
+                <Text style={{ color: t.text, flex: 1 }}>Downloading… {Math.round(ai.status.progress * 100)}%</Text>
+                <Pressable onPress={ai.onCancel} hitSlop={8} accessibilityRole="button">
+                  <Text style={{ color: t.error, fontWeight: '600' }}>Cancel</Text>
+                </Pressable>
+              </View>
+            )}
+            {(ai.status.state === 'ready' || ai.status.state === 'loading') && (
+              <>
+                <View style={styles.stepper}>
+                  <Text style={{ color: t.text, flex: 1 }}>
+                    Use AI to understand what I type{ai.status.state === 'loading' ? ' (loading…)' : ''}
+                  </Text>
+                  <Switch value={ai.enabled} onValueChange={ai.onToggle} trackColor={{ true: t.accent }} />
+                </View>
+                <Text style={[styles.hint, { color: t.muted }]}>
+                  {ai.modelName}. When it's off (or still loading), the built-in rules are used.
+                </Text>
+                <Pressable onPress={ai.onDelete} style={styles.calRow} accessibilityRole="button">
+                  <Ionicons name="trash-outline" size={18} color={t.error} />
+                  <Text style={{ color: t.error }}>Delete model (frees {ai.sizeGb.toFixed(1)} GB)</Text>
+                </Pressable>
+              </>
+            )}
+            {ai.status.state === 'error' && (
+              <>
+                <Text style={[styles.hint, { color: t.error }]}>{ai.status.message}</Text>
+                <Pressable onPress={ai.onDownload} style={[styles.button, { backgroundColor: t.accent }]} accessibilityRole="button">
+                  <Text style={styles.buttonText}>Try again</Text>
+                </Pressable>
+              </>
+            )}
+          </>
+        )}
 
         <Text style={[styles.label, { color: t.muted }]}>YOUR DAY</Text>
         <Stepper t={t} label="Wake up" value={settings.dayStart} onChange={(v) => set({ dayStart: Math.max(0, Math.min(v, settings.dayEnd - 60)) })} />
