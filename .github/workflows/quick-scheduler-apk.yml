@@ -1,0 +1,75 @@
+# Builds a standalone Android APK for quick-scheduler/ (JS bundled in, no dev
+# server needed) and publishes it as a GitHub Release you can download on your phone.
+name: Quick Scheduler APK
+
+on:
+  push:
+    paths:
+      - 'quick-scheduler/**'
+      - '.github/workflows/quick-scheduler-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: quick-scheduler-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: quick-scheduler
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: quick-scheduler/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test and typecheck
+        run: |
+          npm test
+          npx tsc --noEmit
+
+      - name: Generate native Android project
+        run: npx expo prebuild --platform android --no-install
+
+      - name: Build release APK
+        working-directory: quick-scheduler/android
+        run: ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a,armeabi-v7a
+
+      - name: Collect APK
+        run: cp android/app/build/outputs/apk/release/app-release.apk ../quick-scheduler.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quick-scheduler-apk
+          path: quick-scheduler.apk
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: quick-scheduler-build-${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          name: Quick Scheduler (build ${{ github.run_number }})
+          body: |
+            Standalone Android APK built from `${{ github.ref_name }}` @ ${{ github.sha }}.
+            On your phone: download **quick-scheduler.apk** below, open it, and allow installing from this source.
+          files: quick-scheduler.apk
+          make_latest: true

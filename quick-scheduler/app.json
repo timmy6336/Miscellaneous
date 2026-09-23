@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "Quick Scheduler",
+    "slug": "quick-scheduler",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.timmy6336.quickscheduler"
+    },
+    "android": {
+      "package": "com.timmy6336.quickscheduler",
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "backgroundColor": "#5B5BD6",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-calendar",
+        {
+          "calendarPermission": "Quick Scheduler adds your plans to your calendar so you get reminders, and reads it to find free time."
+        }
+      ]
+    ]
+  }
+}
