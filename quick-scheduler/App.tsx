@@ -73,6 +73,8 @@ function Main() {
   const [showSettings, setShowSettings] = useState(false);
   const [aiStatus, setAiStatus] = useState<AiStatus>({ state: 'missing' });
   const [thinking, setThinking] = useState(false);
+  /** First launch off Wi-Fi: ask before the big download. */
+  const [askAiDownload, setAskAiDownload] = useState(false);
 
   // Refs mirror state for async work (calendar sync) that outlives a render.
   const itemsRef = useRef(items);
@@ -200,7 +202,14 @@ function Main() {
     const unsubscribe = model.subscribe(setAiStatus);
     (async () => {
       if (await model.isDownloaded()) {
-        if (settingsRef.current.useAi) model.loadModel(true);
+        if (settingsRef.current.aiOn) model.loadModel(true);
+      } else if (settingsRef.current.aiOn && !settingsRef.current.aiDownloadAsked) {
+        if (await model.onWifi()) {
+          updateSettings({ aiDownloadAsked: true });
+          model.downloadModel();
+        } else {
+          setAskAiDownload(true);
+        }
       }
     })();
     return unsubscribe;
@@ -280,7 +289,7 @@ function Main() {
     [setItems, setRoutines, showToast, syncToCalendar],
   );
 
-  const aiReady = settings.useAi && aiStatus.state === 'ready';
+  const aiReady = settings.aiOn && aiStatus.state === 'ready';
 
   const submit = useCallback(async () => {
     const input = text.trim();
@@ -459,6 +468,19 @@ function Main() {
             </View>
           </View>
         )}
+        {askAiDownload && !settings.aiDownloadAsked && aiStatus.state === 'missing' && (
+          <Banner
+            t={t}
+            icon="sparkles-outline"
+            text={`Download on-device AI so the app understands more ways of saying things (one-time ${(ai()!.MODEL.bytes / 1e9).toFixed(1)} GB; you're not on Wi-Fi).`}
+            action="Download"
+            onPress={() => {
+              updateSettings({ aiDownloadAsked: true });
+              ai()?.downloadModel();
+            }}
+            onDismiss={() => updateSettings({ aiDownloadAsked: true })}
+          />
+        )}
         {oldOnes.length > 0 && (
           <Banner
             t={t}
@@ -525,15 +547,15 @@ function Main() {
           ai()
             ? {
                 status: aiStatus,
-                enabled: settings.useAi,
+                enabled: settings.aiOn,
                 sizeGb: ai()!.MODEL.bytes / 1e9,
                 modelName: ai()!.MODEL.name,
                 onToggle: (on) => {
-                  updateSettings({ useAi: on });
+                  updateSettings({ aiOn: on });
                   if (on) ai()?.loadModel();
                 },
                 onDownload: () => {
-                  updateSettings({ useAi: true });
+                  updateSettings({ aiOn: true, aiDownloadAsked: true });
                   ai()?.downloadModel();
                 },
                 onCancel: () => ai()?.cancelDownload(),

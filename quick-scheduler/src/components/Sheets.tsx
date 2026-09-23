@@ -211,13 +211,12 @@ export function SettingsSheet({
 
         {ai && (
           <>
-            <Text style={[styles.label, { color: t.muted }]}>ON-DEVICE AI (EXPERIMENTAL)</Text>
+            <Text style={[styles.label, { color: t.muted }]}>ON-DEVICE AI</Text>
             {ai.status.state === 'missing' && (
               <>
                 <Text style={[styles.hint, { color: t.muted }]}>
                   Lets a small AI model read notes the built-in rules can't fully understand. Runs on your phone; nothing is sent
-                  anywhere. Still being tuned, so it may get things wrong. One-time download of about {ai.sizeGb.toFixed(1)} GB (Wi-Fi
-                  recommended).
+                  anywhere. One-time download of about {ai.sizeGb.toFixed(1)} GB (Wi-Fi recommended).
                 </Text>
                 <Pressable onPress={ai.onDownload} style={[styles.button, { backgroundColor: t.accent }]} accessibilityRole="button">
                   <Text style={styles.buttonText}>Download on-device AI</Text>

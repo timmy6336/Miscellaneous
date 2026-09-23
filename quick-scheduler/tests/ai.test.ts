@@ -68,3 +68,22 @@ test('the model is only asked when the rules left something unread', () => {
   assert.equal(rulesNeedHelp(p('call the plumber first thing tomorrow')), true);
   assert.equal(rulesNeedHelp(p('yoga every 3rd day')), true);
 });
+
+test('whatever the rules read wins, field by field', () => {
+  // The model reads "after 5pm" as a start time; the rules know it's a window.
+  const g = cmd({ title: 'Groceries', start: '5pm' }, 'groceries after 5pm');
+  assert.deepEqual([g.start, g.earliest], [null, h(17)]);
+  const r = cmd({ title: 'Call grandma' }, 'call grandma every sunday');
+  assert.deepEqual(r.repeat, [0]);
+  const p = cmd({ title: 'Piano lesson', start: '4pm' }, 'piano lesson every other wednesday at 4pm');
+  assert.deepEqual([p.repeat, p.interval], [[3], 2]);
+  // The model still supplies what the rules can't read.
+  const c = cmd({ title: 'Coffee with Jess', day: 'thursday' }, 'coffee w/ jess thurs arvo');
+  assert.deepEqual([c.title, c.date], ['Coffee with Jess', '2026-09-24']);
+});
+
+test('cancelling "every week" or "no more" ends the repeat', () => {
+  assert.equal(cmd({ action: 'remove', title: 'Work out' }, 'stop working out every week').kind, 'stopRepeat');
+  assert.equal(cmd({ action: 'remove', title: 'Work out' }, 'no more workouts').kind, 'stopRepeat');
+  assert.equal(cmd({ action: 'remove', title: 'Gym' }, "I can't make it to the gym today").kind, 'remove');
+});

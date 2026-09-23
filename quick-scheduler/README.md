@@ -12,16 +12,23 @@ Open the app, type what you want to do, and it goes on your schedule.
 
 Everything is stored on the phone. There's no account and no server.
 
-## On-device AI (experimental, off by default)
+## On-device AI
 
-Settings → On-device AI can download a small language model, **Llama 3.2 1B Instruct** (about 0.8 GB, Q4_K_M), from Hugging Face and run it offline on the phone via [llama.rn](https://github.com/mybigday/llama.rn) (llama.cpp).
+On first launch (on Wi-Fi; off Wi-Fi it asks first) the app downloads a small language model, **Qwen2.5 1.5B Instruct** (about 1.1 GB, Q4_K_M), from Hugging Face. After that it runs fully offline on the phone via [llama.rn](https://github.com/mybigday/llama.rn) (llama.cpp). It can be switched off or deleted in Settings.
 
-- The built-in rules read every note first. The model is only asked when the rules clearly missed something (e.g. a time or day word left in the title, like “gym at half past five”).
-- The model answers with a small JSON object (action, title, day, times, window, repeat days) whose shape is enforced during decoding; the regular scheduler then places it.
-- Guards: a time or day it outputs is ignored unless the note mentions one, and an exact time found by the rules always wins.
+- **Rules first.** The built-in rules read every note; the model is only asked when they clearly missed something (a time or day word left in the title, like “call the plumber first thing tomorrow” or “coffee w/ jess thurs arvo”).
+- **The model copies, the code converts.** It fills in a small form with phrases copied from the note (“530pm”, “friday”, “an hour”), with the shape enforced during decoding. The rules turn those phrases into times and dates, and the scheduler places the result.
+- **Guards.** Phrases that aren't in the note are dropped, and anything the rules can read (times, windows, lengths, repeats) wins over the model, field by field.
 - If loading ever crashes the app (low memory), it won't auto-load again; Settings offers a retry.
 
-**Why it's off by default:** the *Quick Scheduler AI eval* workflow runs `tests/ai-cases.ts` (41 notes) through the same prompt and llama.cpp engine. The first run scored the 1B model at 3/41 versus 39/41 for the rules, at ~13 s per note on a CI CPU, so it isn't good enough to rely on yet.
+**Accuracy** is measured by the *Quick Scheduler AI eval* workflow, which runs `tests/ai-cases.ts` (43 notes) through the same prompt and llama.cpp engine with `scripts/ai-eval.mts`. Results on 2026-09-23 (before the rules-merge change):
+
+| | Model alone | Rules first + model (what the app does) | Per note, CI CPU |
+| --- | --- | --- | --- |
+| Qwen2.5 1.5B | 32/43 | 41/43 | ~3.1 s |
+| Llama 3.2 1B | 16/43 | 39/43 | ~2.1 s |
+| Gemma 3 1B | 19/43 | 39/43 | ~2.2 s |
+| Rules only | | 40/43 | instant |
 
 ## Install on Android
 

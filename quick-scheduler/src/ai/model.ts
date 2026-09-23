@@ -7,12 +7,14 @@ import { initLlama, LlamaContext } from 'llama.rn';
 import { Item } from '../types';
 import { ANSWER_SCHEMA, buildMessages, parseAnswer } from './prompt';
 
+// Qwen2.5 1.5B scored best of the ~1B models in scripts/ai-eval.mts
+// (Llama 3.2 1B and Gemma 3 1B were far behind).
 export const MODEL = {
-  name: 'Llama 3.2 1B Instruct (Q4_K_M)',
-  file: 'Llama-3.2-1B-Instruct-Q4_K_M.gguf',
-  url: 'https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf',
-  /** Approximate, for the UI and the free-space check. */
-  bytes: 808 * 1024 * 1024,
+  name: 'Qwen2.5 1.5B Instruct (Q4_K_M)',
+  file: 'qwen2.5-1.5b-instruct-q4_k_m.gguf',
+  url: 'https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf',
+  /** For the UI and the free-space check. */
+  bytes: 1_092_088_838,
 };
 
 const dir = `${FS.documentDirectory}models/`;

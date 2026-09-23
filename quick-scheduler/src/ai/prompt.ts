@@ -194,21 +194,35 @@ export function answerToCommand(raw: unknown, note: string, now: Date, viewDate:
   const ruleAdd = rules.kind === 'add' ? rules : 'fallback' in rules ? rules.fallback : null;
   const today = dateKey(now);
 
-  const date = dayToDate(a.day ?? null, note, now);
+  let date = dayToDate(a.day ?? null, note, now);
   const on = date ?? viewDate;
   let start = timeOf(fromNote(a.start, note), now, on);
   let end = timeOf(fromNote(a.end, note), now, on);
-  const after = timeOf(fromNote(a.after, note), now, on);
-  const before = timeOf(fromNote(a.before, note), now, on);
+  let after = timeOf(fromNote(a.after, note), now, on);
+  let before = timeOf(fromNote(a.before, note), now, on);
   let duration = durationOf(fromNote(a.duration, note), now, on);
   let repeat = repeatDays(a.repeat, note);
   // A single day without "every"/"weekly" is just that day, not a repeat.
   if (repeat.length === 1 && !/\b(every|each|weekly)\b|days\b/i.test(note)) repeat = [];
+  let interval = repeat.length && a.every_other_week && /other|second|bi-?weekly/i.test(note) ? 2 : 1;
 
-  // The rules are exact when they find a time; trust them over the model.
-  if (ruleAdd && ruleAdd.start !== null) {
-    start = ruleAdd.start;
+  // The rules are exact whenever they do find something, so they win field by
+  // field; the model fills in what they couldn't read.
+  if (ruleAdd) {
+    if (ruleAdd.start !== null) {
+      start = ruleAdd.start;
+    } else if (ruleAdd.earliest !== null || ruleAdd.latest !== null) {
+      start = null; // "after 5pm" is a window, not a time
+      end = null;
+      after = ruleAdd.earliest;
+      before = ruleAdd.latest;
+    }
     if (ruleAdd.duration !== null) duration = ruleAdd.duration;
+    if (ruleAdd.repeat) {
+      repeat = ruleAdd.repeat;
+      interval = ruleAdd.interval;
+    }
+    if (!date && ruleAdd.date !== viewDate) date = ruleAdd.date;
   }
   if (start !== null && end !== null && duration === null) {
     while (end <= start) end += 12 * 60;
@@ -229,7 +243,7 @@ export function answerToCommand(raw: unknown, note: string, now: Date, viewDate:
         repeat: repeat.length ? repeat : null,
         alsoOn: [],
         alsoAt: ruleAdd?.alsoAt ?? [],
-        interval: repeat.length && a.every_other_week && /other|second|bi-?weekly/i.test(note) ? 2 : 1,
+        interval: repeat.length ? interval : 1,
       };
       return add;
     }
@@ -248,7 +262,12 @@ export function answerToCommand(raw: unknown, note: string, now: Date, viewDate:
         fallback: ruleAdd,
       };
     case 'remove':
-      return title ? { kind: 'remove', query: title, date, fallback: ruleAdd } : null;
+      if (!title) return null;
+      // "stop working out every week", "no more workouts": end the repeat.
+      if (/\b(stop|no more|any ?more|every week|each week|weekly|for good|all of them|recurring|repeating)\b/i.test(note)) {
+        return { kind: 'stopRepeat', query: title, fallback: ruleAdd };
+      }
+      return { kind: 'remove', query: title, date, fallback: ruleAdd };
     case 'done':
       return title ? { kind: 'done', query: title, fallback: ruleAdd } : null;
     case 'stop_repeat':
