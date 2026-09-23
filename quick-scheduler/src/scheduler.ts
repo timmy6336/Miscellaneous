@@ -133,6 +133,12 @@ export function daysLabel(days: number[]): string {
   return 'every ' + [...days].sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7)).map((d) => DAY_SHORT[d]).join(', ');
 }
 
+/** "every Mon, Wed" / "every other week: Mon, Wed". */
+export function routineLabel(r: Routine): string {
+  const days = daysLabel(r.days);
+  return (r.interval ?? 1) > 1 ? `every other week, ${days.replace(/^every /, '')}` : days;
+}
+
 export function routineWhen(r: Routine): string {
   return r.start !== null ? fmtRange(r.start, r.duration) : windowLabel(r.earliest, r.latest) || 'in a free slot';
 }
@@ -183,6 +189,29 @@ export function findItem(query: string, items: Item[], ctx: Ctx, dateHint: strin
 // Commands.
 
 function add(cmd: AddCommand, items: Item[], ctx: Ctx, note = '', routines: Routine[] = []): Result {
+  if (cmd.alsoAt.length) {
+    // "meds at 8am and 8pm": one item (or repeat) per time.
+    let next = items;
+    let nextRoutines = routines;
+    const previews: string[] = [];
+    let date = cmd.date;
+    for (const start of [cmd.start, ...cmd.alsoAt]) {
+      const r = add({ ...cmd, start, alsoAt: [] }, next, ctx, '', nextRoutines);
+      next = r.items;
+      nextRoutines = r.routines ?? nextRoutines;
+      previews.push(start === null ? 'anytime' : fmtTime(start));
+      date = r.date ?? date;
+    }
+    const summary = `“${cmd.title}” at ${previews.join(' and ')}${cmd.repeat ? `, ${daysLabel(cmd.repeat)}` : ''}`;
+    return {
+      items: next,
+      routines: cmd.repeat ? nextRoutines : undefined,
+      message: `Added ${summary}.${note}`,
+      tone: 'ok',
+      preview: `Add ${summary}`,
+      date,
+    };
+  }
   if (cmd.repeat) return addRoutine(cmd, items, routines, ctx);
   if (cmd.alsoOn.length) {
     // "yoga sat and sun": one item per day.
@@ -317,8 +346,15 @@ export function materialize(routines: Routine[], items: Item[], ctx: Ctx): { rou
   const nextRoutines = routines.map((r) => {
     if (r.until >= horizon) return r;
     let d = [addDays(r.until, 1), r.from, today].sort().pop()!;
+    const fromDate = fromKey(r.from);
     for (; d <= horizon; d = addDays(d, 1)) {
-      if (!r.days.includes(fromKey(d).getDay())) continue;
+      const day = fromKey(d);
+      if (!r.days.includes(day.getDay())) continue;
+      if ((r.interval ?? 1) > 1) {
+        // Weeks (Sunday-based) since the repeat started.
+        const days = Math.round((day.getTime() - fromDate.getTime()) / 864e5) + fromDate.getDay();
+        if (Math.floor(days / 7) % r.interval! !== 0) continue;
+      }
       added.push({
         id: newId(),
         title: r.title,
@@ -346,6 +382,7 @@ function addRoutine(cmd: AddCommand, items: Item[], routines: Routine[], ctx: Ct
     id: newId(),
     title: cmd.title,
     days: cmd.repeat!,
+    interval: cmd.interval > 1 ? cmd.interval : undefined,
     start: cmd.start,
     duration: cmd.duration ?? ctx.settings.defaultDuration,
     earliest: cmd.start === null ? cmd.earliest : null,
@@ -357,7 +394,7 @@ function addRoutine(cmd: AddCommand, items: Item[], routines: Routine[], ctx: Ct
   const m = materialize([...routines, routine], items, ctx);
   const first = m.added.filter((i) => i.routineId === routine.id).sort((a, b) => a.date.localeCompare(b.date))[0];
   const placedFirst = first && m.items.find((i) => i.id === first.id);
-  const summary = `“${routine.title}” ${daysLabel(routine.days)} · ${routineWhen(routine)}`;
+  const summary = `“${routine.title}” ${routineLabel(routine)} · ${routineWhen(routine)}`;
   return {
     items: m.items,
     routines: m.routines,
@@ -393,9 +430,9 @@ export function stopRoutine(items: Item[], routines: Routine[], routineId: strin
   return {
     items: next,
     routines: routines.filter((x) => x.id !== routineId),
-    message: `Stopped repeating “${r.title}” (${daysLabel(r.days)}). Removed ${dates.size} upcoming.`,
+    message: `Stopped repeating “${r.title}” (${routineLabel(r)}). Removed ${dates.size} upcoming.`,
     tone: 'ok',
-    preview: `Stop repeating “${r.title}” (${daysLabel(r.days)})`,
+    preview: `Stop repeating “${r.title}” (${routineLabel(r)})`,
   };
 }
 

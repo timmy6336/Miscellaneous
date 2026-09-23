@@ -198,8 +198,8 @@ test('removing one occurrence mentions how to stop the series', () => {
   assert.match(r.last.message, /stop piano/);
 });
 
-test('day lists without "every" add one item per day', () => {
-  const { items } = run(['brunch sat and sun at 11am']);
+test('"this sat and sun" adds one item per day', () => {
+  const { items } = run(['brunch this sat and sun at 11am']);
   assert.deepEqual(items.map((i) => i.date).sort(), ['2026-09-26', '2026-09-27']);
   assert.ok(items.every((i) => i.start === h(11) && !i.routineId));
 });
@@ -210,4 +210,24 @@ test('leftovers skip missed occurrences of repeats', () => {
     earliest: null, done: false, createdAt: 0, routineId: 'x',
   };
   assert.equal(bringToToday([missed], ctx()).items[0].date, '2026-09-21');
+});
+
+test('the reported workout lands at 5:30-6:30 PM on the right days', () => {
+  const { items } = run(['I work out mon tue Thursday fri from 530pm to 630pm']);
+  assert.equal(items.length, 16);
+  assert.ok(items.every((i) => i.title === 'Work out' && i.start === h(17, 30) && i.duration === 60 && i.fixed));
+});
+
+test('several times make several items (or repeats)', () => {
+  const once = run(['take meds at 8am and 8pm']);
+  assert.deepEqual(once.items.map((i) => i.start).sort((a, b) => a! - b!), [h(8), h(20)]);
+  const daily = run(['take meds every day at 8am and 8pm']);
+  assert.equal(daily.routines.length, 2);
+  assert.equal(daily.items.filter((i) => i.date === '2026-09-24').length, 2);
+});
+
+test('every other week skips alternate weeks', () => {
+  const { items, routines } = run(['piano every other wednesday at 4pm']);
+  assert.equal(routines[0].interval, 2);
+  assert.deepEqual(items.map((i) => i.date).sort(), ['2026-09-23', '2026-10-07']);
 });

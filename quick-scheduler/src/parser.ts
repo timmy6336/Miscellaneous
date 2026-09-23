@@ -23,8 +23,12 @@ export type AddCommand = {
   latest: number | null;
   /** Weekdays (0 = Sunday) this repeats on, e.g. "every mon and wed". */
   repeat: number[] | null;
-  /** Extra one-off days, e.g. "sat and sun" without "every". */
+  /** Extra one-off days, e.g. "this sat and sun". */
   alsoOn: string[];
+  /** Extra start times, e.g. "meds at 8am and 8pm". */
+  alsoAt: number[];
+  /** Repeat every N weeks ("every other week" = 2). */
+  interval: number;
 };
 
 export type Command =
@@ -60,6 +64,10 @@ type When = {
   days?: { dows: number[]; next: boolean };
   /** "every ...", "weekly", "mondays" etc. */
   recurring?: boolean;
+  /** Weeks between repeats ("every other week" = 2). */
+  interval?: number;
+  /** Additional times: "at 8am and 8pm". */
+  extraTimes?: ClockTime[];
   /** Time window for flexible items: "after 5pm", "before noon". */
   after?: ClockTime;
   before?: ClockTime;
@@ -84,8 +92,10 @@ const AMOUNT = String.raw`(\d+(?:\.\d+)?|half an?|an?|one|two|three|four|five|si
 const UNIT = String.raw`(minutes?|mins?|hours?|hrs?|h|m)`;
 const MER = String.raw`(a\.?m\.?|p\.?m\.?)`;
 const AT = String.raw`(?:(?:\bat|\baround|@)\s*)`;
-/** A clock time: "5", "5:30", "5pm", "noon", "midnight" (4 groups). */
-const CLOCK = String.raw`(?:(\d{1,2})(?::(\d{2}))?\s*${MER}?|(noon|midday|midnight))`;
+/** Hour with optional minutes: "5", "5:30", "5.30", "530", "1730" (2 groups). */
+const HM = String.raw`(\d{1,2})(?:[:.]?(\d{2}))?`;
+/** A clock time: "5", "5:30", "530pm", "noon", "midnight" (4 groups). */
+const CLOCK = String.raw`(?:${HM}\s*${MER}?|(noon|midday|midnight))`;
 const NOT_DURATION = String.raw`(?!\s*(?:min|hour|hr|h\b|day|week|month))`;
 
 const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
@@ -95,6 +105,8 @@ const DOW_BY_PREFIX: Record<string, number> = { sun: 0, mon: 1, tue: 2, wed: 3, 
 // Named anchors for "after work", "before lunch", ...
 const NAMED_AFTER: Record<string, number> = { work: 17 * 60, school: 15 * 60 + 30, breakfast: 9 * 60, lunch: 13 * 60, dinner: 19 * 60 + 30 };
 const NAMED_BEFORE: Record<string, number> = { work: 8 * 60 + 30, school: 7 * 60 + 30, breakfast: 8 * 60, lunch: 12 * 60, dinner: 18 * 60 };
+/** A single time token without capture groups, for lists like "8am, 2pm and 8pm". */
+const TIME_TOKEN = String.raw`\b\d{1,2}(?:[:.]?\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?`;
 const DAY_WORD = String.raw`(?:today|tonight|tomorrow|tmrw|tmr|${WEEKDAYS.join('|')})`;
 const TOMORROW = String.raw`(?:tomorrow|tmrw|tmr|tmro|tomorow|tommorow|tommorrow|2moro)`;
 
@@ -174,16 +186,26 @@ function extractWhen(input: string, mode: 'add' | 'move'): { rest: string; when:
     take(/\blater(?:\s+today)?\b/i, () => {
       when.later = true;
     });
+    take(/\b(?:some\s*time|at\s+some\s+point|whenever)\b/i, () => {});
+
 
     // Ranges: "3-4pm", "from 2 to 3:30", "10am to noon" isn't supported, keep it simple.
     take(
       new RegExp(
-        String.raw`(\bfrom\s+)?\b(\d{1,2})(?::(\d{2}))?\s*${MER}?\s*(?:-|–|\bto\b|\buntil\b|\btill\b)\s*(\d{1,2})(?::(\d{2}))?\s*${MER}?(?=\W|$)`,
+        String.raw`(\bfrom\s+)?\b${HM}\s*${MER}?\s*(?:-|–|\bto\b|\buntil\b|\btill\b)\s*${HM}\s*${MER}?(?=\W|$)`,
         'i',
       ),
       (m) => {
         const [, from, h1, m1, mer1, h2, m2, mer2] = m;
-        if (!from && !mer1 && !mer2 && !m1 && !m2) return false;
+        if (!from && !mer1 && !mer2 && !/\d[:.]\d/.test(m[0])) {
+          // A bare "7-9" is a time range, but "555-1234" or "2-3 miles" aren't.
+          const after = s.slice(m.index + m[0].length);
+          const hours = !m1 && !m2 && +h1 >= 1 && +h1 <= 12 && +h2 >= 1 && +h2 <= 12 && +h1 !== +h2;
+          const followedByWord =
+            /^\s*[a-z]/i.test(after) &&
+            !new RegExp(String.raw`^\s*(?:on|every|each|tomorrow|today|tonight|this|next|daily|weekdays?|weekends?|for|at|in|${DAY_TOKEN})\b`, 'i').test(after);
+          if (!hours || followedByWord) return false;
+        }
         const a: ClockTime = { h: +h1, m: +(m1 ?? 0), mer: toMer(mer1) };
         const b: ClockTime = { h: +h2, m: +(m2 ?? 0), mer: toMer(mer2) };
         if (a.h > 23 || b.h > 23 || a.m > 59 || b.m > 59) return false;
@@ -210,6 +232,9 @@ function extractWhen(input: string, mode: 'add' | 'move'): { rest: string; when:
     when.after = a;
     when.before = b;
   });
+  take(/\bbefore\s+(?:bed(?:time)?|sleep|going\s+to\s+(?:bed|sleep))\b/i, () => {
+    when.afterMin = 20 * 60; // winding down in the evening
+  });
   take(/\b(after|before)\s+(work|school|breakfast|lunch|dinner)\b/i, (m) => {
     const key = m[2].toLowerCase();
     if (m[1].toLowerCase() === 'after') when.afterMin = NAMED_AFTER[key];
@@ -226,7 +251,15 @@ function extractWhen(input: string, mode: 'add' | 'move'): { rest: string; when:
     when.before = c;
   });
 
-  // Repeats: "every day", "weekdays", "every week", "every evening".
+  // Repeats: "every other week", "every day", "weekdays", "every week", "every evening".
+  take(/\b(?:every\s+(?:other|second|2nd)\s+week|every\s+(?:2|two)\s+weeks|bi-?weekly|fortnightly)\b/i, () => {
+    when.recurring = true;
+    when.interval = 2;
+  });
+  take(new RegExp(String.raw`\bevery\s+(?:other|second|2nd)\s+(?=${DAY_TOKEN}\b)`, 'i'), () => {
+    when.interval = 2;
+    return 'every';
+  });
   take(/\b(?:every\s*day|each\s+day|every\s+single\s+day|daily)\b/i, () => {
     when.days = { dows: ALL_DAYS, next: false };
     when.recurring = true;
@@ -278,6 +311,25 @@ function extractWhen(input: string, mode: 'add' | 'move'): { rest: string; when:
   take(/\btoday\b/i, () => {
     when.dayOffset ??= 0;
   });
+  // Day ranges: "mon-fri", "monday through thursday".
+  if (!when.days) {
+    take(
+      new RegExp(String.raw`\b(?:(on|every|each|this|next)\s+)?(?:from\s+)?(${DAY_TOKEN})\s*(?:-|–|\bto\b|\bthrough\b|\bthru\b|\buntil\b)\s*(${DAY_TOKEN})\b`, 'i'),
+      (m) => {
+        const a = DOW_BY_PREFIX[m[2].toLowerCase().slice(0, 3)];
+        const b = DOW_BY_PREFIX[m[3].toLowerCase().slice(0, 3)];
+        if (a === b) return false;
+        const dows: number[] = [];
+        for (let d = a; ; d = (d + 1) % 7) {
+          dows.push(d);
+          if (d === b) break;
+        }
+        const prefix = m[1]?.toLowerCase();
+        when.days = { dows: dows.sort(), next: prefix === 'next' };
+        if (prefix !== 'this' && prefix !== 'next') when.recurring = true;
+      },
+    );
+  }
   // Weekdays, alone or as a list: "friday", "on sat", "mon, wed and fri", "tuesdays".
   if (!when.days) {
     take(
@@ -288,19 +340,42 @@ function extractWhen(input: string, mode: 'add' | 'move'): { rest: string; when:
       (m) => {
         const prefix = m[1]?.toLowerCase();
         const words = m[2].toLowerCase().split(/[^a-z]+/).filter((w) => w && w !== 'and' && w !== 'or');
-        // A lone abbreviation like "sat" or "sun" is too likely to be an ordinary word.
-        if (words.length === 1 && !prefix && !words[0].includes('day')) return false;
+        // A lone abbreviation like "sat" or "sun" is too likely to be an ordinary word,
+        // unless a time is right next to it ("soccer sat 10am").
+        if (words.length === 1 && !prefix && !words[0].includes('day')) {
+          const nextToTime =
+            /^\s*(?:at\s+|@\s*)?\d/.test(s.slice(m.index + m[0].length)) ||
+            /\d\s*(?:a\.?m\.?|p\.?m\.?)?\s*(?:on\s+)?$/i.test(s.slice(0, m.index));
+          if (!nextToTime) return false;
+        }
         const dows = [...new Set(words.map((w) => DOW_BY_PREFIX[w.slice(0, 3)]))].sort();
         when.days = { dows, next: prefix === 'next' };
+        // "every friday", "fridays" and lists like "mon wed fri" repeat weekly;
+        // "this sat and sun" / "next fri" are one-offs.
         if (prefix === 'every' || prefix === 'each' || words.some((w) => w.endsWith('days'))) when.recurring = true;
+        else if (dows.length > 1 && prefix !== 'this' && prefix !== 'next') when.recurring = true;
       },
     );
+  }
+
+  if (mode === 'add' && !when.time && !when.after) {
+    // Several times: "meds at 8am and 8pm", "check in at 9am, 1pm and 5pm".
+    take(new RegExp(String.raw`(?:${AT})?${TIME_TOKEN}(?:\s*(?:,|and|&)\s*(?:at\s+)?${TIME_TOKEN})+(?=\W|$)`, 'i'), (m) => {
+      const parts = [...m[0].matchAll(new RegExp(String.raw`(\d{1,2})(?:[:.]?(\d{2}))?\s*${MER}?`, 'gi'))];
+      if (parts.length < 2 || !parts[parts.length - 1][3]) return false;
+      const times = parts.map((p) => clock(p[1], p[2], p[3]));
+      if (times.some((t) => !t)) return false;
+      const last = times[times.length - 1]!;
+      for (const t of times) if (!t!.mer) t!.mer = last.mer;
+      when.time = times[0]!;
+      when.extraTimes = times.slice(1) as ClockTime[];
+    });
   }
 
   // Times.
   if (!when.time) {
     const found =
-      take(new RegExp(String.raw`${AT}?\b(\d{1,2})(?::(\d{2}))?\s*${MER}(?=\W|$)`, 'i'), (m) => {
+      take(new RegExp(String.raw`${AT}?\b${HM}\s*${MER}(?=\W|$)`, 'i'), (m) => {
         const h = +m[1];
         const min = +(m[2] ?? 0);
         if (h < 1 || h > 12 || min > 59) return false;
@@ -312,10 +387,11 @@ function extractWhen(input: string, mode: 'add' | 'move'): { rest: string; when:
         if (h > 23 || min > 59) return false;
         when.time = { h, m: min, mer: null };
       }) ||
-      take(new RegExp(String.raw`${AT}(\d{1,2})\b(?![:.]\d)(?:\s*o'?clock)?`, 'i'), (m) => {
+      take(new RegExp(String.raw`${AT}${HM}\b(?![:.]\d)(?:\s*o'?clock)?`, 'i'), (m) => {
         const h = +m[1];
-        if (h > 23) return false;
-        when.time = { h, m: 0, mer: null };
+        const min = +(m[2] ?? 0);
+        if (h > 23 || min > 59) return false;
+        when.time = { h, m: min, mer: null };
       }) ||
       take(/\b(\d{1,2})\s*o'?clock\b/i, (m) => {
         const h = +m[1];
@@ -340,6 +416,7 @@ const LEADING_FILLER = new RegExp(
       "i(?:'m| am) going to",
       'i\\s+(?:really\\s+)?(?:want|need|have|got|gotta|should|must|wanna|gonna|plan)(?:\\s+to)?',
       "i(?:'ll| will)",
+      'i(?:\\s+usually|\\s+normally|\\s+always)?(?=\\s)',
       'gotta', 'need to', 'want to', 'have to', 'going to', 'gonna', 'wanna', 'should',
       'to ?do:?', 'add', 'schedule', 'to',
     ].join('|') +
@@ -369,6 +446,8 @@ type Resolved = {
   latest: number | null;
   repeat: number[] | null;
   alsoOn: string[];
+  alsoAt: number[];
+  interval: number;
 };
 
 function resolve(when: When, now: Date, defaultDate: string): Resolved {
@@ -409,6 +488,7 @@ function resolve(when: When, now: Date, defaultDate: string): Resolved {
   const effectiveDate = date ?? defaultDate;
   // For "at 9" today, a time that already passed means PM; not for repeats.
   const nowIfToday = effectiveDate === today && !repeat ? nowMin : null;
+  const alsoAt = (when.extraTimes ?? []).map((t) => to24(t, when.partOfDay, nowIfToday));
   if (when.time) {
     start = to24(when.time, when.partOfDay, nowIfToday);
     if (when.endTime) {
@@ -435,7 +515,7 @@ function resolve(when: When, now: Date, defaultDate: string): Resolved {
     }
     if (highs.length) latest = Math.min(...highs);
   }
-  return { date, start, duration, earliest, latest, repeat, alsoOn };
+  return { date, start, duration, earliest, latest, repeat, alsoOn, alsoAt, interval: repeat ? when.interval ?? 1 : 1 };
 }
 
 const fromKeyParts = (key: string) => {
@@ -458,6 +538,8 @@ function parseAdd(text: string, now: Date, defaultDate: string): AddCommand | nu
     latest: r.latest,
     repeat: r.repeat,
     alsoOn: r.alsoOn,
+    alsoAt: r.alsoAt,
+    interval: r.interval,
   };
 }
 

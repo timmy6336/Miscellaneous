@@ -18,7 +18,7 @@ function add(s: string) {
 test('plain task goes to the viewed day with no time', () => {
   assert.deepEqual(add('buy groceries'), {
     kind: 'add', title: 'Buy groceries', date: TODAY, start: null, duration: null, earliest: null,
-    latest: null, repeat: null, alsoOn: [],
+    latest: null, repeat: null, alsoOn: [], alsoAt: [], interval: 1,
   });
   assert.equal((p('water plants', '2026-09-25') as any).date, '2026-09-25');
 });
@@ -171,8 +171,9 @@ test('repeating items', () => {
   assert.deepEqual(add('read daily after 9pm').repeat, [0, 1, 2, 3, 4, 5, 6]);
 });
 
-test('day lists without "every" are one-offs', () => {
-  const b = add('brunch sat and sun');
+test('day lists repeat unless "this"/"next" is used', () => {
+  assert.deepEqual(add('brunch sat and sun').repeat, [0, 6]);
+  const b = add('brunch this sat and sun');
   assert.equal(b.repeat, null);
   assert.equal(b.date, '2026-09-26');
   assert.deepEqual(b.alsoOn, ['2026-09-27']);
@@ -201,4 +202,43 @@ test('stopping repeating items', () => {
   const fb = (p('stop by the bank at 3pm') as any).fallback;
   assert.equal(fb.title, 'Stop by the bank');
   assert.equal(fb.start, h(15));
+});
+
+test('times without a colon: "530pm", "1730", "5.30"', () => {
+  const w = add('I work out mon tue Thursday fri from 530pm to 630pm');
+  assert.equal(w.title, 'Work out');
+  assert.deepEqual(w.repeat, [1, 2, 4, 5]);
+  assert.equal(w.start, h(17, 30));
+  assert.equal(w.duration, 60);
+  assert.equal(add('workout at 530pm').start, h(17, 30));
+  assert.equal(add('call at 1730').start, h(17, 30));
+  assert.equal(add('pick up kids at 3.15pm').start, h(15, 15));
+  assert.equal(add('lunch 1230-130pm').start, h(12, 30));
+  assert.equal(add('lunch 1230-130pm').duration, 60);
+  assert.equal(add('call 555-1234').start, null);
+  assert.equal(add('call 555-1234').title, 'Call 555-1234');
+});
+
+test('more natural phrasings', () => {
+  const g = add('I go to the gym mon/wed/fri 6-7am');
+  assert.deepEqual([g.title, g.repeat, g.start, g.duration], ['Go to the gym', [1, 3, 5], h(6), 60]);
+  assert.deepEqual(add('swim tuesdays and thursdays 7 to 8pm').repeat, [2, 4]);
+  assert.equal(add('swim tuesdays and thursdays 7 to 8pm').start, h(19));
+  const st = add('standup mon-fri 9am');
+  assert.deepEqual([st.title, st.repeat, st.start], ['Standup', [1, 2, 3, 4, 5], h(9)]);
+  assert.deepEqual(add('clean monday through wednesday').repeat, [1, 2, 3]);
+  const soccer = add('soccer practice sat 10am');
+  assert.deepEqual([soccer.title, soccer.date, soccer.start], ['Soccer practice', '2026-09-26', h(10)]);
+  const study = add('study 7-9');
+  assert.deepEqual([study.title, study.start, study.duration], ['Study', h(19), 120]);
+  assert.equal(add('run 2-3 miles').start, null);
+  const meds = add('take meds at 8am and 8pm');
+  assert.deepEqual([meds.title, meds.start, meds.alsoAt], ['Take meds', h(8), [h(20)]]);
+  const piano = add('piano lesson every other week');
+  assert.deepEqual([piano.title, piano.repeat, piano.interval], ['Piano lesson', [3], 2]);
+  assert.equal(add('tennis every other saturday at 9am').interval, 2);
+  assert.deepEqual(add('tennis every other saturday at 9am').repeat, [6]);
+  const read = add('read for 30 mins before bed');
+  assert.deepEqual([read.title, read.duration, read.earliest], ['Read', 30, h(20)]);
+  assert.equal(add('laundry sometime tomorrow afternoon').title, 'Laundry');
 });

@@ -27,6 +27,8 @@ export type Routine = {
   title: string;
   /** Weekdays, 0 = Sunday. */
   days: number[];
+  /** Repeat every N weeks (default 1; "every other week" = 2). */
+  interval?: number;
   start: number | null;
   duration: number;
   earliest: number | null;

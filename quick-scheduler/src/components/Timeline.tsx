@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { fmtDuration, fmtTime } from '../dates';
-import { daysLabel } from '../scheduler';
+import { routineLabel } from '../scheduler';
 import { Theme } from '../theme';
 import { BusyEvent, Item, Routine } from '../types';
 
@@ -25,7 +25,7 @@ type Row = { kind: 'item'; item: Item; start: number } | { kind: 'busy'; ev: Bus
 export function Timeline({ theme: t, items, routines, wake, bedtime, busy, nowMin, isPast, onPress, onToggle }: Props) {
   const repeatLabel = (i: Item) => {
     const r = i.routineId ? routines.find((x) => x.id === i.routineId) : null;
-    return r ? daysLabel(r.days) : null;
+    return r ? routineLabel(r) : null;
   };
   const timed: Row[] = [
     ...items.filter((i) => i.start !== null).map((item) => ({ kind: 'item' as const, item, start: item.start! })),

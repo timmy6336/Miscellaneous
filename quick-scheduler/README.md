@@ -33,7 +33,10 @@ Newer builds install over older ones and keep your data.
 | `gym this evening for 1h` | First free hour after 5 PM |
 | `check the oven in 20 min` | 20 minutes from now |
 | `haircut friday`, `brunch next sat` | That day, next free slot |
-| `brunch sat and sun at 11` | One item on each of those days |
+| `I work out mon tue thu fri 530pm to 630pm`, `standup mon-fri 9am` | Repeats on those days (lists of days repeat weekly) |
+| `brunch this sat and sun at 11` | One item on each of those days (“this”/“next” = just once) |
+| `take meds at 8am and 8pm` | One item per time |
+| `piano every other wednesday at 4pm` | Repeats every second week |
 | `groceries after 5pm`, `run after work` | First free slot after 5 PM |
 | `pay bills before 3`, `email Sam by noon` | First free slot that ends by then |
 | `study between 2 and 4pm` | First free slot in that window |

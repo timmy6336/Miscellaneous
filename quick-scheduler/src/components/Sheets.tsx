@@ -4,7 +4,7 @@ import { Modal, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 're
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CalendarChoice } from '../calendar';
 import { dayLabel, fmtRange, fmtTime } from '../dates';
-import { daysLabel, routineWhen } from '../scheduler';
+import { routineLabel, routineWhen } from '../scheduler';
 import { Theme } from '../theme';
 import { Item, Routine, Settings } from '../types';
 
@@ -84,7 +84,7 @@ export function ItemSheet({
           </Text>
           {routine && (
             <Text style={[styles.sheetSub, { color: t.muted, marginTop: -8 }]}>
-              <Ionicons name="repeat" size={13} /> Repeats {daysLabel(routine.days)}
+              <Ionicons name="repeat" size={13} /> Repeats {routineLabel(routine)}
             </Text>
           )}
           <Action t={t} icon={item.done ? 'arrow-undo-outline' : 'checkmark-circle-outline'} label={item.done ? 'Mark not done' : 'Mark done'} onPress={() => onToggle(item)} />
@@ -211,7 +211,7 @@ export function SettingsSheet({
               <View style={{ flex: 1 }}>
                 <Text style={{ color: t.text }}>{r.title}</Text>
                 <Text style={{ color: t.muted, fontSize: 12 }}>
-                  {daysLabel(r.days)} · {routineWhen(r)}
+                  {routineLabel(r)} · {routineWhen(r)}
                 </Text>
               </View>
               <Pressable onPress={() => onStopRepeat(r)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Stop repeating ${r.title}`}>
